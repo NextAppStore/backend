@@ -349,7 +349,7 @@ def test_image_name_mapping_legacy_returns_image_name_unfiltered(
     # Legacy layout: the Terraform module declares a single
     # ``image_name`` variable, WITHOUT ``@platform:internal``. The
     # endpoint filters this by the bare name (see the explicit
-    # ``var_name == "image_name"`` branch in ``_parse_terraform_variables``).
+    # ``var_name == "image_name"`` branch in ``parse_terraform_variables``).
     _write_legacy_packer(repo)
     _write_terraform_variables(
         repo,

@@ -37,12 +37,14 @@ from app.schemas import (
 from app.services import deployment_notifier, email_service
 from app.services import lifecycle as lifecycle_service
 from app.services import task_service as task_service_module
+from app.services.app_variables import load_variable_definitions
 from app.services.deployment_pubsub import pubsub
 from app.services.deployment_status import (
     build_resource_detail,
     build_resource_views,
 )
 from app.services.tf_state_parser import parse_tf_state
+from app.utils.app_image import serialize_app
 from app.utils.capabilities import (
     can_view_deployment_owner,
     ensure_operate_deployment,
@@ -365,12 +367,11 @@ def get_deployment(
     # carries bytes. Pydantic's ``DeploymentDetail`` declares
     # ``app.image: Optional[str]`` (the wire shape is a ``data:image/...``
     # URL), so handing it the bytes verbatim throws ``string_unicode``.
-    # Run it through ``_serialize_app`` — the same helper the
+    # Run it through ``serialize_app`` — the same helper the
     # ``/apps``-endpoints already use — to swap the bytes for the
     # data-URL string in place. Apps without an uploaded image are
     # unaffected (``getattr`` returns ``None`` and the helper no-ops).
-    from app.routers.apps import _serialize_app  # local: avoid import cycle
-    serialised_app = _serialize_app(deployment.app)
+    serialised_app = serialize_app(deployment.app)
 
     return DeploymentDetail(
         deploymentId=deployment.deploymentId,
@@ -920,7 +921,6 @@ def create_deployment(
     # server agree on which variable is scoped/file/free-text.
     variable_definitions: list[dict] = []
     if deployment.userInputVar or deployment.files:
-        from app.routers.apps import load_variable_definitions
         release_tag = deployment.releaseTag or "main"
         try:
             variable_definitions = load_variable_definitions(target_app, release_tag)

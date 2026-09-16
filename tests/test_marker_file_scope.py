@@ -1,20 +1,20 @@
 """Tests for the @openstack marker grammar — scope slot, file-extension
 filter, and HCL type-shape validation that goes with both.
 
-These exercise ``_parse_marker`` and ``_parse_one_variable`` as pure
+These exercise ``parse_marker`` and ``parse_one_variable`` as pure
 functions — no Git clone, no FastAPI app, no DB.
 """
 import pytest
 
-from app.routers.apps import (
-    _FILE_SCOPES,
-    _OS_TYPES,
-    _VAR_SCOPES,
+from app.services.hcl import (
+    FILE_SCOPES,
+    OS_TYPES,
+    VAR_SCOPES,
     MarkerError,
-    _parse_marker,
-    _parse_one_variable,
-    _validate_file_var_shape,
-    _validate_scoped_var_shape,
+    parse_marker,
+    parse_one_variable,
+    validate_file_var_shape,
+    validate_scoped_var_shape,
 )
 
 
@@ -32,11 +32,11 @@ def _build_block(var_name: str, var_type: str, description: str) -> str:
 @pytest.mark.unit
 def test_file_type_is_registered():
     """``file`` must be in the supported set so the marker parses."""
-    assert "file" in _OS_TYPES
+    assert "file" in OS_TYPES
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("scope", sorted(_FILE_SCOPES))
+@pytest.mark.parametrize("scope", sorted(FILE_SCOPES))
 def test_file_marker_accepts_each_scope_with_extensions(scope):
     """File-Marker brauchen einen Endungsfilter im vierten Slot —
     ``all``/``team``/``user`` werden alle akzeptiert, wenn ein gültiger
@@ -46,7 +46,7 @@ def test_file_marker_accepts_each_scope_with_extensions(scope):
         if scope == "all"
         else "map(map(object({name=string, content_b64=string, size=number, content_type=string})))"
     )
-    os_type, mode, multi, file_scope, var_scope, file_exts = _parse_marker(
+    os_type, mode, multi, file_scope, var_scope, file_exts = parse_marker(
         "task_pdf", var_type, f"Aufgabenstellung @openstack:file:{scope}:pdf"
     )
     assert os_type == "file"
@@ -68,7 +68,7 @@ def test_file_marker_requires_extensions_slot():
     file-type filter so the wizard's ``accept`` attribute is non-empty
     and the backend has something to validate against."""
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "task_pdf",
             "map(object({name=string, content_b64=string, size=number, content_type=string}))",
             "Aufgabenstellung @openstack:file:all",
@@ -78,7 +78,7 @@ def test_file_marker_requires_extensions_slot():
 
 @pytest.mark.unit
 def test_file_marker_accepts_multiple_extensions():
-    os_type, _, _, file_scope, _, file_exts = _parse_marker(
+    os_type, _, _, file_scope, _, file_exts = parse_marker(
         "task_files",
         "map(map(object({name=string, content_b64=string, size=number, content_type=string})))",
         "Per-user @openstack:file:user:pdf|docx|txt",
@@ -92,7 +92,7 @@ def test_file_marker_accepts_multiple_extensions():
 def test_file_marker_lowercases_extensions():
     """Endungen sind case-insensitive — wir normalisieren auf lowercase
     damit der Backend-Vergleich gegen den Dateinamen-Suffix konsistent ist."""
-    _, _, _, _, _, file_exts = _parse_marker(
+    _, _, _, _, _, file_exts = parse_marker(
         "task_pdf",
         "map(object({name=string, content_b64=string, size=number, content_type=string}))",
         "Aufgabe @openstack:file:all:PDF",
@@ -104,7 +104,7 @@ def test_file_marker_lowercases_extensions():
 def test_file_marker_rejects_unknown_scope_with_suggestion():
     """A typo like ``teams`` (plural) hints at the right token."""
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "team_dataset",
             "map(map(object({})))",
             "Per-team data @openstack:file:teams:pdf",
@@ -117,7 +117,7 @@ def test_file_marker_rejects_unknown_scope_with_suggestion():
 def test_file_marker_rejects_malformed_extensions():
     """Komma als Trenner ist falsch — der Marker verlangt Pipe."""
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "task_pdf",
             "map(object({}))",
             "Files @openstack:file:all:pdf,docx",
@@ -131,7 +131,7 @@ def test_file_marker_rejected_for_packer_source():
     Pfad mergt hartcodiert in ``userInputVar.terraform``. Statt einer
     stillen Falle: Marker-Fehler."""
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "task_pdf",
             "map(object({}))",
             "Files @openstack:file:all:pdf",
@@ -155,10 +155,10 @@ def test_file_marker_rejected_for_packer_source():
 )
 def test_validate_file_var_shape(scope, hcl_type, ok):
     if ok:
-        _validate_file_var_shape("v", hcl_type, scope)  # must not raise
+        validate_file_var_shape("v", hcl_type, scope)  # must not raise
     else:
         with pytest.raises(MarkerError):
-            _validate_file_var_shape("v", hcl_type, scope)
+            validate_file_var_shape("v", hcl_type, scope)
 
 
 # ----------------------------------------------------------------
@@ -167,12 +167,12 @@ def test_validate_file_var_shape(scope, hcl_type, ok):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("scope", sorted(_VAR_SCOPES))
+@pytest.mark.parametrize("scope", sorted(VAR_SCOPES))
 def test_var_scope_marker_on_resource_variable(scope):
     """``@openstack:flavor:id:single:<scope>`` setzt ``var_scope``
     zusätzlich zu den klassischen Resource-Marker-Slots."""
     hcl_type = "string" if scope == "all" else "map(string)"
-    os_type, mode, multi, file_scope, var_scope, file_exts = _parse_marker(
+    os_type, mode, multi, file_scope, var_scope, file_exts = parse_marker(
         "flavor_id", hcl_type, f"@openstack:flavor:id:single:{scope}"
     )
     assert os_type == "flavor"
@@ -187,7 +187,7 @@ def test_var_scope_marker_on_resource_variable(scope):
 def test_pure_scope_marker_without_type():
     """``@openstack:::team`` ist die Kurzform für eine free-text-
     Variable, die nur per-Team scoped ist — kein Resource-Picker."""
-    os_type, mode, multi, file_scope, var_scope, file_exts = _parse_marker(
+    os_type, mode, multi, file_scope, var_scope, file_exts = parse_marker(
         "hostname_prefix", "map(string)", "Pro Team eindeutig @openstack:::team"
     )
     assert os_type is None
@@ -207,14 +207,14 @@ def test_pure_scope_marker_empty_marker_is_error():
     # representation is just the bare token without slots: this is
     # explicitly rejected via the bad-prefix path.
     with pytest.raises(MarkerError):
-        _parse_marker("x", "string", "@openstack: foo")  # whitespace not allowed
+        parse_marker("x", "string", "@openstack: foo")  # whitespace not allowed
 
 
 @pytest.mark.unit
 def test_var_scope_typo_gets_suggestion():
     """``teem`` hint at ``team``."""
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "flavor_id",
             "map(string)",
             "@openstack:flavor:id:single:teem",
@@ -229,20 +229,20 @@ def test_var_scope_team_requires_map_hcl_type():
     schickt eine Map pro Slot, Terraform würde sie sonst beim Apply
     ablehnen."""
     with pytest.raises(MarkerError):
-        _validate_scoped_var_shape("flavor_id", "string", "team")
+        validate_scoped_var_shape("flavor_id", "string", "team")
     with pytest.raises(MarkerError):
-        _validate_scoped_var_shape("flavor_id", "number", "user")
+        validate_scoped_var_shape("flavor_id", "number", "user")
     # map(...) is fine
-    _validate_scoped_var_shape("flavor_id", "map(string)", "team")
-    _validate_scoped_var_shape("flavor_id", "map(list(string))", "user")
+    validate_scoped_var_shape("flavor_id", "map(string)", "team")
+    validate_scoped_var_shape("flavor_id", "map(list(string))", "user")
     # ``all`` bypasses the shape check entirely.
-    _validate_scoped_var_shape("flavor_id", "string", "all")
+    validate_scoped_var_shape("flavor_id", "string", "all")
 
 
 @pytest.mark.unit
 def test_packer_rejects_non_all_var_scope():
     with pytest.raises(MarkerError) as exc:
-        _parse_marker(
+        parse_marker(
             "team_image_size",
             "map(string)",
             "@openstack:::team",
@@ -258,7 +258,7 @@ def test_parse_one_variable_emits_var_scope_for_scoped_resource(tmp_path):
         "map(string)",
         "Pro Team @openstack:flavor:id:single:team",
     )
-    out = _parse_one_variable(
+    out = parse_one_variable(
         var_name="team_flavor_ids",
         var_block=block,
         var_block_offset=0,
@@ -280,7 +280,7 @@ def test_parse_one_variable_emits_file_ext_and_var_scope_mirror(tmp_path):
         "map(object({name=string, content_b64=string, size=number, content_type=string}))",
         "Aufgabe @openstack:file:all:pdf",
     )
-    out = _parse_one_variable(
+    out = parse_one_variable(
         var_name="task_pdf",
         var_block=block,
         var_block_offset=0,
@@ -309,7 +309,7 @@ def test_parse_one_variable_attaches_marker_error_for_type_mismatch():
         "string",  # wrong shape for any file scope
         "Whoops @openstack:file:all:pdf",
     )
-    out = _parse_one_variable(
+    out = parse_one_variable(
         var_name="broken_files",
         var_block=block,
         var_block_offset=0,
@@ -331,7 +331,7 @@ def test_parse_one_variable_attaches_marker_error_for_scoped_string_var():
         "string",
         "Soll per Team scoped sein @openstack:::team",
     )
-    out = _parse_one_variable(
+    out = parse_one_variable(
         var_name="team_string",
         var_block=block,
         var_block_offset=0,
@@ -348,13 +348,13 @@ def test_parse_one_variable_attaches_marker_error_for_scoped_string_var():
 def test_classic_resource_marker_still_parses():
     """Regression — the new slots must not break the existing marker
     for OpenStack resources without scope."""
-    os_type, mode, multi, file_scope, var_scope, file_exts = _parse_marker(
+    os_type, mode, multi, file_scope, var_scope, file_exts = parse_marker(
         "net",
         "string",
         "Pick a network @openstack:network",
     )
     assert os_type == "network"
-    assert mode is None  # default applied by ``_apply_defaults``, not here
+    assert mode is None  # default applied by ``apply_defaults``, not here
     assert multi is None
     assert file_scope is None
     assert var_scope is None
@@ -365,7 +365,7 @@ def test_classic_resource_marker_still_parses():
 def test_too_many_segments_rejected():
     """``@openstack:network:id:single:team:extra`` is malformed."""
     with pytest.raises(MarkerError):
-        _parse_marker(
+        parse_marker(
             "x",
             "map(string)",
             "@openstack:network:id:single:team:extra",
@@ -382,7 +382,7 @@ def test_multi_with_scoped_map_uses_inner_type():
     hat innen eine Liste — ``:multi`` passt. Der Marker MUSS hier
     erfolgreich parsen.
     """
-    os_type, mode, multi, file_scope, var_scope, file_exts = _parse_marker(
+    os_type, mode, multi, file_scope, var_scope, file_exts = parse_marker(
         "team_flavor_ids",
         "map(list(string))",
         "@openstack:flavor:id:multi:team",

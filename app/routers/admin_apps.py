@@ -7,13 +7,14 @@ from app.crud import app_version_approvals as crud_approvals
 from app.crud import apps as crud_apps
 from app.database import get_db
 from app.models import User
-from app.routers.apps import _serialize_app, load_variable_definitions
 from app.schemas import (
     AppResponse,
     AppVersionApprovalDecision,
     AppVersionApprovalResponse,
     AppVersionApprovalWithApp,
 )
+from app.services.app_variables import load_variable_definitions
+from app.utils.app_image import serialize_app
 from app.utils.permissions import require_admin
 
 router = APIRouter()
@@ -144,7 +145,7 @@ def deactivate_app(
 
     _require_app(db, app_id)
     updated = crud_apps.update_app(db, app_id, AppUpdate(is_private=True))
-    return _serialize_app(updated)
+    return serialize_app(updated)
 
 
 # ----------------------------------------------------------------

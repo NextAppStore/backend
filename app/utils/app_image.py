@@ -80,3 +80,25 @@ def build_image_data_url(image_bytes: bytes | None, image_mime: str | None) -> s
         return None
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{image_mime};base64,{encoded}"
+
+
+def serialize_app(app):
+    """Replace ``app.image`` (bytes) with the data-URL form in-place.
+
+    The ORM model carries the raw bytes plus a separate mime column.
+    The Pydantic ``AppResponse`` schema declares ``image: Optional[str]``
+    and uses ``from_attributes=True``, so Pydantic reads ``app.image``
+    directly. Overwriting that attribute with the rebuilt data-URL
+    means the response serialiser sees a string and the wire format
+    matches the schema. Returns ``app`` so callers can chain.
+
+    Lives here rather than in a router because three routers need it
+    (``/apps``, ``/admin/apps``, ``/deployments``) — having one import
+    another is what forced the function-local imports this replaced.
+    """
+    if app is None:
+        return None
+    raw_bytes = getattr(app, "image", None)
+    if isinstance(raw_bytes, (bytes, memoryview, bytearray)):
+        app.image = build_image_data_url(bytes(raw_bytes), getattr(app, "image_mime", None))
+    return app
