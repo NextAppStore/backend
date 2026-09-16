@@ -108,7 +108,7 @@ def user_connection(db: Session, user: User) -> Iterator[Any]:
 
 
 # ----------------------------------------------------------------
-# TTL-Cache für Resource-Listen
+# TTL cache for resource listings
 # ----------------------------------------------------------------
 # Key = (user_id, resource_kind, frozenset of filter items)
 # Value = (expiry_epoch, data)

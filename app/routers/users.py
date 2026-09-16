@@ -109,6 +109,12 @@ def search_users_keycloak(
 
     # ``db`` is injected via Depends(get_db) so test dependency overrides
     # apply and the route never writes against the dev DB.
+    #
+    # This import MUST stay function-local. Binding the name at module
+    # import time would make ``patch("app.utils.keycloak_auth.
+    # sync_user_from_keycloak")`` a no-op here, and the test that fakes
+    # the Keycloak round-trip patches exactly that target. Resolving it
+    # per call keeps the patch effective.
     from app.utils.keycloak_auth import sync_user_from_keycloak
 
     keycloak_users = search_keycloak_users(query, limit)

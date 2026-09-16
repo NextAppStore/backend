@@ -68,16 +68,17 @@ def validate_scoped_var_shape(var_name: str, var_type: str, scope: str) -> None:
     """Verify a non-file variable marked with ``var_scope = team|user``
     has a map-typed HCL declaration.
 
-    Reasoning: bei ``team``/``user``-Scope schickt der Wizard eine Map
-    (slot_key → value) an Terraform/Packer. Wenn der HCL-Type ein
-    Skalar ist (``string``, ``number``, ...), würde Terraform die Map
-    beim Apply ablehnen. Wir fangen das hier ab, damit der App-Autor
-    den Fehler bei ``GET /apps/{id}/variables`` sieht und nicht erst
-    beim ersten Deploy.
+    Reasoning: for ``team``/``user`` scope the wizard ships a map
+    (slot_key → value) to Terraform/Packer. A scalar HCL type
+    (``string``, ``number``, …) would make Terraform reject that map at
+    apply time. Catching it here means the app author sees the error on
+    ``GET /apps/{id}/variables`` rather than on their first deploy.
 
-    Bei ``scope = all`` (oder fehlendem Scope) gilt das nicht — dann
-    rendert der Wizard genau EIN Eingabefeld, das wie heute direkt
-    als Skalar oder Liste an Terraform durchgereicht wird.
+    ``scope = all`` (or no scope) is exempt: the wizard renders exactly
+    one input field, which is passed through as a scalar or list.
+
+    The German error message is deliberate — marker errors are shown
+    verbatim to the app author in the UI.
     """
     if scope not in ("team", "user"):
         return
@@ -396,7 +397,7 @@ def parse_packer_variables(file_path: str, template_key: str = "default") -> lis
 
     variables = []
     for var_name, var_block, block_offset in iter_variable_blocks(content):
-        # Filter: image_name rauslassen
+        # Filter: drop ``image_name`` — platform-injected, not user input
         if var_name == "image_name":
             continue
         var_info = parse_one_variable(

@@ -10,6 +10,7 @@ from app.models import User
 from app.routers.dependencies import APP_NOT_FOUND
 from app.schemas import (
     AppResponse,
+    AppUpdate,
     AppVersionApprovalDecision,
     AppVersionApprovalResponse,
     AppVersionApprovalWithApp,
@@ -142,8 +143,6 @@ def deactivate_app(
 ):
     """Emergency deactivation: set app to private so it disappears from
     the store immediately. Does not delete the app or its deployments."""
-    from app.schemas import AppUpdate
-
     _require_app(db, app_id)
     updated = crud_apps.update_app(db, app_id, AppUpdate(is_private=True))
     return serialize_app(updated)

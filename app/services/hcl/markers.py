@@ -705,7 +705,6 @@ def apply_defaults(
 def _closest_match(s: str, candidates: set[str]) -> str | None:
     """
     Simple Levenshtein-1 heuristic for "did you mean …?" hints.
-    ``difflib`` is imported lazily since this is the only place it's used.
     """
     if not s:
         return None

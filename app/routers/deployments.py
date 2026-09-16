@@ -92,18 +92,13 @@ def _list_course_scope_deployments(
     their set is empty. Returns the raw ``Deployment`` rows; the caller
     runs the shared enrichment loop over the result.
     """
+    # Admins see everything inside the chosen scope. The course-id
+    # filter still applies so ``?scope=course`` narrows the listing
+    # for them too: we pull every course the admin is registered as
+    # course-teacher for (typically none) and fall back to their own
+    # owned set below, which is what the profile page needs when an
+    # admin asks for one specific student.
     my_courses = get_my_course_teacher_ids(current_user, db)
-    if current_user.role == UserRole.ADMIN:
-        # Admins always see everything inside the chosen scope.
-        # We still need the course-id filter to make ``?scope=course``
-        # narrow the listing in some way — otherwise the param is a
-        # no-op for admins. The implementation: pull every course
-        # the admin is registered as course-teacher for (typically
-        # empty), and fall back to the union with the explicit
-        # ``student`` filter so the route still does something
-        # useful in the common case of an admin requesting a
-        # specific student's deployments via the profile page.
-        pass
     if not my_courses and current_user.role != UserRole.ADMIN:
         # Teacher with no course-teacher rows — the course scope
         # is empty by definition. Return an empty page rather
