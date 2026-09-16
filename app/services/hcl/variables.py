@@ -108,65 +108,95 @@ def _coerce_hcl_default(raw_default: str, var_type: str) -> tuple[Any, bool]:
         return (None, True)
 
     stripped = raw_default.strip()
-    if stripped == "":
-        return (None, True)
-
-    # Literal HCL ``null`` → Variable ist required.
-    if stripped.lower() == "null":
+    # An empty slot and a literal HCL ``null`` both mean "no default",
+    # which Terraform treats as "required".
+    if stripped == "" or stripped.lower() == "null":
         return (None, True)
 
     type_lower = (var_type or "").strip().lower()
 
-    # Bool first, otherwise ``"true"`` as a string default is caught by
-    # the string path.
+    # Bool before anything else — otherwise ``"true"`` declared as a
+    # string default would be swallowed by the string path.
     if type_lower == "bool":
-        if stripped.lower() == "true":
-            return (True, False)
-        if stripped.lower() == "false":
-            return (False, False)
+        coerced = _as_bool(stripped)
+        if coerced is not None:
+            return (coerced, False)
 
     if type_lower == "number":
-        try:
-            if "." in stripped or "e" in stripped.lower():
-                return (float(stripped), False)
-            return (int(stripped), False)
-        except ValueError:
-            return (stripped, False)
+        return (_as_number(stripped), False)
 
-    is_list_like = (
-        type_lower.startswith(("list(", "set(", "tuple("))
-        or type_lower in ("list", "set")
+    if _is_collection_type(type_lower) or stripped.startswith(("[", "{")):
+        return (_as_json_literal(stripped), False)
+
+    return (_unquote(stripped), False)
+
+
+def _as_bool(stripped: str) -> bool | None:
+    """``true``/``false`` case-insensitively; ``None`` for anything else,
+    which lets the caller fall through to the remaining type paths."""
+    lowered = stripped.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return None
+
+
+def _as_number(stripped: str) -> Any:
+    """Int, or float when the literal carries a decimal point or an
+    exponent. An unparseable literal passes through as the raw string —
+    the wizard renders it verbatim rather than dropping the author's value.
+    """
+    try:
+        if "." in stripped or "e" in stripped.lower():
+            return float(stripped)
+        return int(stripped)
+    except ValueError:
+        return stripped
+
+
+def _is_collection_type(type_lower: str) -> bool:
+    """True for the HCL type constructors whose literals are JSON-shaped."""
+    return (
+        type_lower.startswith(("list(", "set(", "tuple(", "map("))
+        or type_lower in ("list", "set", "map", "object")
     )
-    is_map_like = type_lower.startswith("map(") or type_lower in ("map", "object")
 
-    if is_list_like or is_map_like or stripped.startswith(("[", "{")):
-        # python-hcl2 would be the clean option, but it isn't available
-        # in the backend right now and a lazy import would make the
-        # import path fragile. Instead we use json.loads — HCL literals
-        # for lists/maps with string/number/bool values are a true
-        # subset of JSON.
-        try:
-            return (json.loads(stripped), False)
-        except (ValueError, TypeError):
-            # Fallback: HCL allows unquoted identifiers as strings
-            # (``[NAT]``) and ``true``/``false``/``null`` as values. Try
-            # a gentle pre-tokenize step; on further failure the string
-            # passes through unchanged.
-            try:
-                normalised = re.sub(
-                    r"\b(true|false|null)\b",
-                    lambda m: m.group(0).lower(),
-                    stripped,
-                    flags=re.IGNORECASE,
-                )
-                return (json.loads(normalised), False)
-            except (ValueError, TypeError):
-                return (stripped, False)
 
-    # String (or unknown type): strip outer quotes if the caller hasn't.
+def _as_json_literal(stripped: str) -> Any:
+    """Parse a list/map literal.
+
+    python-hcl2 would be the clean option, but it isn't a backend
+    dependency and adding a lazy import would make the import path
+    fragile. ``json.loads`` covers it instead: HCL list/map literals over
+    string, number and bool values are a true subset of JSON.
+
+    Two things JSON rejects that HCL allows: capitalised ``True``/
+    ``False``/``Null``, which the retry lowercases. Anything still
+    unparseable (unquoted identifiers like ``[NAT]``, interpolations)
+    passes through as the raw string.
+    """
+    try:
+        return json.loads(stripped)
+    except (ValueError, TypeError):
+        pass
+    try:
+        normalised = re.sub(
+            r"\b(true|false|null)\b",
+            lambda m: m.group(0).lower(),
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        return json.loads(normalised)
+    except (ValueError, TypeError):
+        return stripped
+
+
+def _unquote(stripped: str) -> str:
+    """Strip one layer of matching outer quotes, if the caller left them on."""
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
-        return (stripped[1:-1], False)
-    return (stripped, False)
+        return stripped[1:-1]
+    return stripped
 
 
 def parse_one_variable(

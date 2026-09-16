@@ -68,86 +68,84 @@ def get_dashboard_stats(
     Soft-deleted rows (``deleted_at IS NOT NULL``) are excluded on both
     counters — same as the list endpoints.
     """
-    deployments_q = (
-        db.query(func.count(Deployment.deploymentId))
-        .filter(Deployment.deleted_at.is_(None))
+    return DashboardStatsResponse(
+        deployments=_count_visible_deployments(db, current_user),
+        apps=_count_visible_apps(db, current_user),
+        courses=db.query(func.count(Course.courseId)).scalar() or 0,
+        courseScopeDeployments=_count_course_scope_deployments(db, current_user),
     )
 
+
+def _count_visible_deployments(db: Session, current_user: User) -> int:
+    """Deployments the caller can see on ``GET /deployments``.
+
+    Staff see what they own; students additionally see what they are a
+    member of, via a team or a direct mapping. Mirrors
+    ``crud_deployments.get_deployments(member_user_id=...)``.
+    """
+    q = db.query(func.count(Deployment.deploymentId)).filter(
+        Deployment.deleted_at.is_(None)
+    )
     if current_user.role in (UserRole.TEACHER, UserRole.ADMIN):
-        deployments_q = deployments_q.filter(
-            Deployment.userId == current_user.userId
-        )
+        q = q.filter(Deployment.userId == current_user.userId)
     else:
-        # Owner OR team member OR direct mapping. Mirrors
-        # ``crud_deployments.get_deployments(member_user_id=...)``.
         member_team_ids = db.query(UserToTeam.teamId).filter(
             UserToTeam.userId == current_user.userId
         )
-        member_deployment_ids_via_teams = db.query(Team.deploymentId).filter(
+        via_teams = db.query(Team.deploymentId).filter(
             Team.teamId.in_(member_team_ids)
         )
-        member_deployment_ids_direct = db.query(
-            UserToDeployment.deploymentId
-        ).filter(UserToDeployment.userId == current_user.userId)
-        deployments_q = deployments_q.filter(
+        via_direct = db.query(UserToDeployment.deploymentId).filter(
+            UserToDeployment.userId == current_user.userId
+        )
+        q = q.filter(
             or_(
                 Deployment.userId == current_user.userId,
-                Deployment.deploymentId.in_(member_deployment_ids_via_teams),
-                Deployment.deploymentId.in_(member_deployment_ids_direct),
+                Deployment.deploymentId.in_(via_teams),
+                Deployment.deploymentId.in_(via_direct),
             )
         )
+    return q.scalar() or 0
 
-    deployments_total = deployments_q.scalar() or 0
 
-    # Apps visible to the user — role-branched, same gate as the
-    # ``/apps`` endpoint at ``routers/apps.py``. Admin sees everything
-    # non-deleted (mirrors ``crud_apps.get_apps``); everyone else
-    # sees own + public-approved (mirrors ``crud_apps.get_visible_apps``).
-    if current_user.role == UserRole.ADMIN:
-        apps_total = (
-            db.query(func.count(App.appId))
-            .filter(App.deleted_at.is_(None))
-            .scalar()
-        ) or 0
-    else:
+def _count_visible_apps(db: Session, current_user: User) -> int:
+    """Apps the caller can see on ``GET /apps``.
+
+    Admins see every non-deleted app (mirrors ``crud_apps.get_apps``);
+    everyone else sees their own plus public apps with at least one
+    approved version (mirrors ``crud_apps.get_visible_apps``).
+    """
+    q = db.query(func.count(App.appId)).filter(App.deleted_at.is_(None))
+    if current_user.role != UserRole.ADMIN:
         approved_app_ids = (
             db.query(AppVersionApproval.appId)
             .filter(AppVersionApproval.status == AppVersionApprovalStatus.APPROVED)
             .distinct()
             .scalar_subquery()
         )
-        apps_total = (
-            db.query(func.count(App.appId))
-            .filter(App.deleted_at.is_(None))
-            .filter(
-                or_(
-                    App.userId == current_user.userId,
-                    (App.is_private == False)  # noqa: E712
-                    & App.appId.in_(approved_app_ids),
-                )
+        q = q.filter(
+            or_(
+                App.userId == current_user.userId,
+                (App.is_private == False)  # noqa: E712
+                & App.appId.in_(approved_app_ids),
             )
-            .scalar()
-        ) or 0
+        )
+    return q.scalar() or 0
 
-    courses_total = db.query(func.count(Course.courseId)).scalar() or 0
 
-    # Course-teacher scope counter. Counts deployments whose owner sits
-    # in one of the requestor's taught courses; soft-deleted deployments
-    # are excluded the same way as the primary counter.
-    course_scope_deployments = 0
+def _count_course_scope_deployments(db: Session, current_user: User) -> int:
+    """Deployments whose owner sits in one of the caller's taught courses.
+
+    0 for anyone not registered as a course-teacher. Soft-deleted rows
+    are excluded the same way as the primary counter.
+    """
     my_course_ids = get_my_course_teacher_ids(current_user, db)
-    if my_course_ids:
-        course_scope_deployments = (
-            db.query(func.count(Deployment.deploymentId))
-            .join(User, User.userId == Deployment.userId)
-            .filter(Deployment.deleted_at.is_(None))
-            .filter(User.courseId.in_(my_course_ids))
-            .scalar()
-        ) or 0
-
-    return DashboardStatsResponse(
-        deployments=deployments_total,
-        apps=apps_total,
-        courses=courses_total,
-        courseScopeDeployments=course_scope_deployments,
-    )
+    if not my_course_ids:
+        return 0
+    return (
+        db.query(func.count(Deployment.deploymentId))
+        .join(User, User.userId == Deployment.userId)
+        .filter(Deployment.deleted_at.is_(None))
+        .filter(User.courseId.in_(my_course_ids))
+        .scalar()
+    ) or 0
