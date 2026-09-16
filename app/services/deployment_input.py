@@ -311,167 +311,169 @@ def validate_scoped_user_input(
     if not user_input_var:
         return
 
-    # Compose the universe of valid slot keys per scope. ``team``
-    # accepts any team name; ``user`` accepts ``TeamName-Username``
-    # composites — mirror of ``userSlotKey`` in the wizard.
-    team_names: set[str] = set()
-    for team in teams_payload or []:
-        team_name = getattr(team, "name", None) or (team.get("name") if isinstance(team, dict) else None)
-        if not team_name:
-            continue
-        team_names.add(team_name)
-        # ``team.userIds`` contains UUID strings here, not usernames —
-        # the deployment endpoint resolves usernames just below us
-        # when assembling ``teams_dict``. We accept any non-empty
-        # composite key prefix-matching ``f"{team_name}-"`` for
-        # user-scoped variables, because the wizard renders one slot
-        # per member and labels it with the username (not the UUID).
-        # A stricter check would require an extra DB round-trip; the
-        # prefix-and-non-empty check is enough to catch typos and
-        # cross-team key smuggling.
-
-    # Longest-prefix-match helper for user-scope composite keys:
-    # ``TeamName-Username``. A naive ``slot_key.find('-')`` would
-    # truncate a team named ``Team-A`` to just ``Team``, so any team
-    # name containing a dash would be misclassified as unknown. We
-    # iterate the known team names from longest to shortest and pick
-    # the first one that either equals ``slot_key`` (empty username,
-    # rejected below) or prefixes it as ``f"{team}-"``.
-    teams_by_length = sorted(team_names, key=len, reverse=True)
-
-    def _user_slot_team_prefix(slot_key: str) -> str | None:
-        for team in teams_by_length:
-            if slot_key == team:
-                # No trailing ``-Username`` — caller treats this as a
-                # missing-user-segment and surfaces ``unknown_scope_target``.
-                return team
-            if slot_key.startswith(team + "-"):
-                return team
-        return None
-
-    def _is_empty_slot_value(val) -> bool:
-        """Treat None, empty string, empty list, and empty dict as
-        "slot not filled". The wizard would otherwise let a required
-        team/user-scoped var slip through with one team left blank,
-        which Terraform would catch with a much less actionable
-        ``Inappropriate value for attribute`` deep in the worker log.
-        """
-        if val is None:
-            return True
-        if isinstance(val, str) and val == "":
-            return True
-        return isinstance(val, (list, dict)) and len(val) == 0
-
+    roster = _SlotRoster.from_payload(teams_payload)
     for source_key in ("terraform", "packer"):
         block = user_input_var.get(source_key)
         if not isinstance(block, dict):
             continue
-        for vdef in variable_definitions:
-            if vdef.get("source") != source_key:
-                continue
-            scope = vdef.get("varScope")
-            if scope not in ("team", "user"):
-                continue
-            var_name = vdef["name"]
-            value = block.get(var_name)
-            is_file = vdef.get("osType") == "file"
-            required = bool(vdef.get("required"))
-            if value is None:
-                # File-scope vars MUST be present — the wizard always
-                # ships at least an empty map for them, so a None here
-                # is a hand-crafted-POST shape. For non-file required
-                # scoped vars, raise on the slot-completeness check
-                # below by treating the absent value as an empty map.
-                if required:
-                    value = {}
-                else:
-                    continue  # variable left at HCL default — allowed
-            if not isinstance(value, dict):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "reason": "scoped_var_not_map",
-                        "variable": var_name,
-                        "scope": scope,
-                    },
-                )
-            for slot_key in value:
-                if scope == "team":
-                    if slot_key not in team_names:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail={
-                                "reason": "unknown_scope_target",
-                                "variable": var_name,
-                                "scope": scope,
-                                "slot": slot_key,
-                                "allowed": sorted(team_names),
-                            },
-                        )
-                else:  # user scope
-                    # Longest-prefix-match against known team names so
-                    # a team named ``Team-A`` parses to prefix
-                    # ``Team-A`` and rest ``Username`` instead of
-                    # prefix ``Team`` (which wouldn't be a known team).
-                    prefix = _user_slot_team_prefix(slot_key)
-                    if prefix is None or slot_key == prefix:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail={
-                                "reason": "unknown_scope_target",
-                                "variable": var_name,
-                                "scope": scope,
-                                "slot": slot_key,
-                                "hint": "expected ``TeamName-Username``",
-                            },
-                        )
+        for vdef in _scoped_vars(variable_definitions, source_key):
+            _validate_one_scoped_var(vdef, block, roster)
 
-            # Required slot-completeness check: for required team /
-            # user scoped variables every expected slot key must carry
-            # a non-empty value. Without this an empty map (or one
-            # team left blank) would silently pass here and only fail
-            # downstream with an opaque Terraform error.
-            #
-            # File vars are skipped from the completeness sweep — the
-            # per-file size/decode validation in
-            # :func:`attach_files_to_user_input` raises a more specific
-            # error (file_var_empty / file_b64_invalid) for them. We
-            # only checked slot identity above; the bytes themselves
-            # are validated at that layer.
-            if required and not is_file:
-                expected_slots: set[str] = set()
-                if scope == "team":
-                    expected_slots = set(team_names)
-                # For ``user`` scope we don't have the per-team member
-                # roster here (would need a DB round-trip we already
-                # avoid above), so we only enforce that each slot the
-                # caller did ship carries a non-empty value. The
-                # wizard's frontend check is the primary guard; this
-                # is defense-in-depth against hand-crafted POSTs that
-                # ship one half-filled team. A POST that omits a team
-                # entirely for a required user-scope var is caught by
-                # the team-scope branch via team_names because the
-                # wizard always emits at least one slot per team.
 
-                missing: list[str] = []
-                for slot in expected_slots:
-                    if _is_empty_slot_value(value.get(slot)):
-                        missing.append(slot)
-                # Also flag empty values among slots the caller did
-                # provide — covers user-scope and any partial-fill case.
-                for slot, val in value.items():
-                    if _is_empty_slot_value(val) and slot not in missing:
-                        missing.append(slot)
-                if missing:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "reason": "required_slot_empty",
-                            "variable": var_name,
-                            "scope": scope,
-                            "missing_slots": sorted(missing),
-                        },
-                    )
+class _SlotRoster:
+    """The universe of slot keys a deployment's scoped variables may use.
+
+    ``team`` scope accepts any team name verbatim; ``user`` scope accepts
+    ``TeamName-Username`` composites — the mirror of ``userSlotKey`` in
+    the wizard.
+
+    The team payload carries ``userIds`` (UUID strings), not usernames,
+    while the wizard labels user slots with the username. Resolving that
+    here would cost a DB round-trip, so user slots are validated by
+    prefix instead: a known team name plus a non-empty remainder. That
+    catches typos and cross-team key smuggling, which is what this guard
+    is for.
+    """
+
+    def __init__(self, team_names: set[str]) -> None:
+        self.team_names = team_names
+        # Longest-first so a team named ``Team-A`` matches as ``Team-A``
+        # rather than as ``Team`` — a naive ``slot_key.find('-')`` would
+        # misclassify every team name containing a dash as unknown.
+        self._by_length = sorted(team_names, key=len, reverse=True)
+
+    @classmethod
+    def from_payload(cls, teams_payload: list) -> "_SlotRoster":
+        names: set[str] = set()
+        for team in teams_payload or []:
+            name = getattr(team, "name", None) or (
+                team.get("name") if isinstance(team, dict) else None
+            )
+            if name:
+                names.add(name)
+        return cls(names)
+
+    def knows_team(self, slot_key: str) -> bool:
+        return slot_key in self.team_names
+
+    def knows_user_slot(self, slot_key: str) -> bool:
+        """True for a ``TeamName-Username`` composite of a known team.
+
+        A slot key equal to a bare team name has no username segment and
+        is rejected — the wizard always emits one slot per member.
+        """
+        for team in self._by_length:
+            if slot_key == team:
+                return False
+            if slot_key.startswith(team + "-"):
+                return True
+        return False
+
+
+def _scoped_vars(variable_definitions: list[dict], source_key: str):
+    """Yield the ``varScope = team|user`` declarations of one source."""
+    for vdef in variable_definitions:
+        if vdef.get("source") != source_key:
+            continue
+        if vdef.get("varScope") in ("team", "user"):
+            yield vdef
+
+
+def _validate_one_scoped_var(vdef: dict, block: dict, roster: _SlotRoster) -> None:
+    """Check shape, slot identity and completeness of one scoped variable."""
+    var_name = vdef["name"]
+    scope = vdef["varScope"]
+    required = bool(vdef.get("required"))
+
+    value = block.get(var_name)
+    if value is None:
+        # An absent optional variable is left at its HCL default. An
+        # absent REQUIRED one is treated as an empty map so the
+        # completeness sweep below reports it as missing slots rather
+        # than passing silently.
+        if not required:
+            return
+        value = {}
+
+    if not isinstance(value, dict):
+        _reject("scoped_var_not_map", variable=var_name, scope=scope)
+
+    for slot_key in value:
+        _check_slot_identity(var_name, scope, slot_key, roster)
+
+    # File vars are exempt from the completeness sweep: their bytes are
+    # validated in :func:`attach_files_to_user_input`, which raises the
+    # more specific ``file_var_empty`` / ``file_b64_invalid``. Here we
+    # only checked slot identity.
+    if required and vdef.get("osType") != "file":
+        _check_required_slots_filled(var_name, scope, value, roster)
+
+
+def _check_slot_identity(
+    var_name: str, scope: str, slot_key: str, roster: _SlotRoster
+) -> None:
+    """Reject a slot key that names no team / member of this deployment.
+
+    Without this an unknown key would reach Terraform and surface as a
+    confusing ``module: invalid for_each key`` deep in the worker log.
+    """
+    if scope == "team":
+        if not roster.knows_team(slot_key):
+            _reject(
+                "unknown_scope_target",
+                variable=var_name,
+                scope=scope,
+                slot=slot_key,
+                allowed=sorted(roster.team_names),
+            )
+    elif not roster.knows_user_slot(slot_key):
+        _reject(
+            "unknown_scope_target",
+            variable=var_name,
+            scope=scope,
+            slot=slot_key,
+            hint="expected ``TeamName-Username``",
+        )
+
+
+def _check_required_slots_filled(
+    var_name: str, scope: str, value: dict, roster: _SlotRoster
+) -> None:
+    """Reject a required scoped variable with blank slots.
+
+    Two sweeps, because they catch different failures. Every team of the
+    deployment must appear (a team-scoped var with one team omitted);
+    and every slot the caller DID ship must be non-empty (a half-filled
+    submission). For ``user`` scope only the second sweep applies — the
+    per-team member roster isn't available here without the DB
+    round-trip this layer deliberately avoids.
+
+    Without the check an empty map slips through and fails downstream
+    with an opaque ``Inappropriate value for attribute``.
+    """
+    expected = set(roster.team_names) if scope == "team" else set()
+    missing = [slot for slot in expected if _is_empty_slot_value(value.get(slot))]
+    missing += [
+        slot
+        for slot, val in value.items()
+        if _is_empty_slot_value(val) and slot not in missing
+    ]
+    if missing:
+        _reject(
+            "required_slot_empty",
+            variable=var_name,
+            scope=scope,
+            missing_slots=sorted(missing),
+        )
+
+
+def _is_empty_slot_value(val) -> bool:
+    """Treat None, empty string, empty list and empty dict as "not filled"."""
+    if val is None:
+        return True
+    if isinstance(val, str) and val == "":
+        return True
+    return isinstance(val, (list, dict)) and len(val) == 0
 
 
 def strip_file_vars_from_user_input(user_input_var: dict | None) -> dict | None:
