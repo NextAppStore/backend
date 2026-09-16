@@ -25,8 +25,31 @@ validation layer, not a domain layer.
 import base64
 import binascii
 import json
+from dataclasses import dataclass
+from typing import NoReturn
 
 from fastapi import HTTPException, status
+
+
+def _reject(
+    reason: str,
+    *,
+    status_code: int = status.HTTP_422_UNPROCESSABLE_ENTITY,
+    **context,
+) -> NoReturn:
+    """Raise the structured rejection this module's callers expect.
+
+    Every 4xx raised here has the same body shape — a stable ``reason``
+    key plus whatever context makes the error actionable (``variable``,
+    ``slot``, ``limit_bytes``, …). The wizard switches on ``reason`` and
+    renders the rest, so the shape is a contract, not a convenience.
+
+    Declared ``NoReturn`` so type checkers and readers both know that a
+    call to it ends the current path — the call sites read as guard
+    clauses rather than as statements that might fall through.
+    """
+    raise HTTPException(status_code=status_code, detail={"reason": reason, **context})
+
 
 # Defense-in-depth limits for inline file uploads. The UX-side warning
 # is mirrored on the wizard, but a hand-crafted POST could still try
@@ -82,21 +105,8 @@ def attach_files_to_user_input(
     if not files:
         return base
 
-    # Build an index var_name → allowed_extensions for the extension
-    # check below. Variables without ``fileExtensions`` skip the
-    # filter — keeps backward compatibility for any caller that doesn't
-    # supply ``variable_definitions``.
-    allowed_exts_by_var: dict[str, list[str]] = {}
-    scoped_file_vars: set[str] = set()
-    if variable_definitions:
-        for vdef in variable_definitions:
-            exts = vdef.get("fileExtensions")
-            if exts:
-                allowed_exts_by_var[vdef["name"]] = [e.lower() for e in exts]
-            if vdef.get("varScope") in ("team", "user"):
-                scoped_file_vars.add(vdef["name"])
-
-    total_bytes = 0
+    rules = _FileVarRules.from_definitions(variable_definitions)
+    budget = _ByteBudget()
     terraform_block = dict(base.get("terraform") or {})
 
     for var_name, slot_map in files.items():
@@ -105,105 +115,21 @@ def attach_files_to_user_input(
             # collision means the frontend filled both the variables
             # picker AND the file uploader for the same name. That's an
             # unrecoverable contract violation; surface it clearly.
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "reason": "file_var_collision",
-                    "variable": var_name,
-                },
-            )
+            _reject("file_var_collision", variable=var_name)
         if not isinstance(slot_map, dict) or not slot_map:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"reason": "file_var_empty", "variable": var_name},
+            _reject("file_var_empty", variable=var_name)
+
+        encoded_slots = {
+            slot_key: _encode_slot(
+                var_name, slot_key, upload, rules.allowed_exts(var_name), budget
             )
+            for slot_key, upload in slot_map.items()
+        }
 
-        encoded_slots: dict[str, dict] = {}
-        for slot_key, upload in slot_map.items():
-            # ``upload`` arrives here as a Pydantic model instance
-            # already (FastAPI deserialised the request body into
-            # ``DeploymentCreate``) — pull fields off attributes.
-            content_b64 = upload.content_b64
-
-            # Extension-filter check — only when the app author declared
-            # an ``@openstack:file:<scope>:<exts>`` filter. We compare
-            # the filename suffix (after the last dot, lowercased) to
-            # the allowed list. Missing dot or unknown suffix → 422.
-            allowed_exts = allowed_exts_by_var.get(var_name)
-            if allowed_exts is not None:
-                name = upload.name or ""
-                dot = name.rfind(".")
-                suffix = name[dot + 1 :].lower() if dot >= 0 else ""
-                if suffix not in allowed_exts:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "reason": "file_extension_rejected",
-                            "variable": var_name,
-                            "slot": slot_key,
-                            "filename": upload.name,
-                            "allowed": allowed_exts,
-                        },
-                    )
-            try:
-                # ``validate=True`` would reject any non-base64
-                # whitespace; the wizard sends compact base64 so this
-                # is fine.
-                decoded = base64.b64decode(content_b64, validate=True)
-            except (binascii.Error, ValueError) as e:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "reason": "file_b64_invalid",
-                        "variable": var_name,
-                        "slot": slot_key,
-                        "error": str(e),
-                    },
-                )
-
-            if abs(len(decoded) - upload.size) > 1:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "reason": "file_size_mismatch",
-                        "variable": var_name,
-                        "slot": slot_key,
-                        "declared": upload.size,
-                        "actual": len(decoded),
-                    },
-                )
-
-            if len(decoded) > _MAX_FILE_BYTES_PER_FILE:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail={
-                        "reason": "file_too_large",
-                        "variable": var_name,
-                        "slot": slot_key,
-                        "limit_bytes": _MAX_FILE_BYTES_PER_FILE,
-                        "actual_bytes": len(decoded),
-                    },
-                )
-            total_bytes += len(decoded)
-            if total_bytes > _MAX_FILE_BYTES_PER_DEPLOYMENT:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail={
-                        "reason": "deployment_files_too_large",
-                        "limit_bytes": _MAX_FILE_BYTES_PER_DEPLOYMENT,
-                    },
-                )
-
-            encoded_slots[slot_key] = {
-                "name": upload.name,
-                "content_b64": content_b64,
-                "size": upload.size,
-                "content_type": upload.content_type or "application/octet-stream",
-            }
         # scope=team|user: HCL type is map(map(object({...}))) —
         # outer key is the team/user slot, inner key is the upload slot.
         # scope=all: HCL type is map(object({...})) — flat map.
-        if var_name in scoped_file_vars:
+        if rules.is_scoped(var_name):
             terraform_block[var_name] = {
                 slot_key: {"uploaded": file_obj}
                 for slot_key, file_obj in encoded_slots.items()
@@ -213,6 +139,146 @@ def attach_files_to_user_input(
 
     base["terraform"] = terraform_block
     return base
+
+
+@dataclass(frozen=True)
+class _FileVarRules:
+    """Per-variable upload rules distilled from the app author's
+    variable declarations.
+
+    ``variable_definitions`` is optional at the call site (a caller
+    without Git access passes ``None``), so both lookups have to degrade
+    to "no rule" rather than to a missing key.
+    """
+
+    # var_name → lowercased allow-list from ``@openstack:file:<scope>:<exts>``.
+    # Absent means the author declared no filter, which is not the same
+    # as an empty list (that would reject everything).
+    _exts: dict[str, list[str]]
+    # Variables whose HCL type nests one more map level because they are
+    # scoped per team or per user.
+    _scoped: frozenset[str]
+
+    @classmethod
+    def from_definitions(cls, variable_definitions: list[dict] | None) -> "_FileVarRules":
+        exts: dict[str, list[str]] = {}
+        scoped: set[str] = set()
+        for vdef in variable_definitions or []:
+            declared = vdef.get("fileExtensions")
+            if declared:
+                exts[vdef["name"]] = [e.lower() for e in declared]
+            if vdef.get("varScope") in ("team", "user"):
+                scoped.add(vdef["name"])
+        return cls(_exts=exts, _scoped=frozenset(scoped))
+
+    def allowed_exts(self, var_name: str) -> list[str] | None:
+        return self._exts.get(var_name)
+
+    def is_scoped(self, var_name: str) -> bool:
+        return var_name in self._scoped
+
+
+class _ByteBudget:
+    """Running total of decoded upload bytes for one deployment.
+
+    Mutable on purpose: the deployment-wide cap has to trip as soon as
+    it is exceeded, in the middle of the per-slot loop, so that a
+    request carrying a hundred oversized files is rejected after the
+    first few rather than after decoding them all.
+    """
+
+    def __init__(self) -> None:
+        self.total = 0
+
+    def add(self, n: int) -> None:
+        self.total += n
+        if self.total > _MAX_FILE_BYTES_PER_DEPLOYMENT:
+            _reject(
+                "deployment_files_too_large",
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                limit_bytes=_MAX_FILE_BYTES_PER_DEPLOYMENT,
+            )
+
+
+def _encode_slot(
+    var_name: str,
+    slot_key: str,
+    upload,
+    allowed_exts: list[str] | None,
+    budget: _ByteBudget,
+) -> dict:
+    """Validate one uploaded file and return its persisted record.
+
+    ``upload`` arrives as a Pydantic model instance already (FastAPI
+    deserialised the request body into ``DeploymentCreate``), so fields
+    are read off attributes. Checks run in the order the caller's error
+    messages assume: extension, base64, declared size, per-file cap,
+    deployment cap.
+    """
+    _check_extension(var_name, slot_key, upload, allowed_exts)
+    decoded = _decode_b64(var_name, slot_key, upload.content_b64)
+
+    if abs(len(decoded) - upload.size) > 1:
+        _reject(
+            "file_size_mismatch",
+            variable=var_name,
+            slot=slot_key,
+            declared=upload.size,
+            actual=len(decoded),
+        )
+    if len(decoded) > _MAX_FILE_BYTES_PER_FILE:
+        _reject(
+            "file_too_large",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            variable=var_name,
+            slot=slot_key,
+            limit_bytes=_MAX_FILE_BYTES_PER_FILE,
+            actual_bytes=len(decoded),
+        )
+    budget.add(len(decoded))
+
+    return {
+        "name": upload.name,
+        "content_b64": upload.content_b64,
+        "size": upload.size,
+        "content_type": upload.content_type or "application/octet-stream",
+    }
+
+
+def _check_extension(
+    var_name: str, slot_key: str, upload, allowed_exts: list[str] | None
+) -> None:
+    """Enforce the app author's ``fileExtensions`` filter, when declared.
+
+    Compares the filename suffix (after the last dot, lowercased) to the
+    allow-list. A name without a dot yields the empty suffix, which is
+    never in a valid allow-list and therefore rejected.
+    """
+    if allowed_exts is None:
+        return
+    name = upload.name or ""
+    dot = name.rfind(".")
+    suffix = name[dot + 1 :].lower() if dot >= 0 else ""
+    if suffix not in allowed_exts:
+        _reject(
+            "file_extension_rejected",
+            variable=var_name,
+            slot=slot_key,
+            filename=upload.name,
+            allowed=allowed_exts,
+        )
+
+
+def _decode_b64(var_name: str, slot_key: str, content_b64: str) -> bytes:
+    """Decode one upload's payload, or reject with ``file_b64_invalid``.
+
+    ``validate=True`` rejects any non-base64 character including
+    whitespace; the wizard sends compact base64 so this is fine.
+    """
+    try:
+        return base64.b64decode(content_b64, validate=True)
+    except (binascii.Error, ValueError) as e:
+        _reject("file_b64_invalid", variable=var_name, slot=slot_key, error=str(e))
 
 
 def validate_scoped_user_input(
