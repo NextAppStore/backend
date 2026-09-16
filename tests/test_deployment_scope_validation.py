@@ -12,11 +12,11 @@ import base64
 import pytest
 from fastapi import HTTPException
 
+from app.schemas import DeploymentFileUpload, Team
 from app.services.deployment_input import (
     attach_files_to_user_input,
     validate_scoped_user_input,
 )
-from app.schemas import DeploymentFileUpload, Team
 
 
 def _payload(name: str, content: bytes) -> DeploymentFileUpload:
