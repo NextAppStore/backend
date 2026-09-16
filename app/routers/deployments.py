@@ -253,23 +253,9 @@ def list_deployments(
         latest_status, latest_type, first_created_at = task_summary.get(
             deployment.deploymentId, (None, None, None)
         )
-        status_value = crud_deployments.derive_status(latest_status, latest_type)
-
-        # Parse userInputVar JSON string back to dict if it exists.
-        # File uploads are stripped down to metadata here so the list
-        # view doesn't ship megabytes of base64 to the browser; the
-        # detail endpoint follows the same rule, and the dedicated
-        # download route is the only path that returns raw bytes.
-        user_input_var_parsed = parse_and_strip_user_input(deployment.userInputVar)
-
-        result.append(DeploymentResponse(
-            deploymentId=deployment.deploymentId,
-            name=deployment.name,
-            appId=deployment.appId,
-            userId=deployment.userId,
-            releaseTag=deployment.releaseTag,
-            userInputVar=user_input_var_parsed,
-            status=status_value,
+        result.append(_deployment_response(
+            deployment,
+            status_value=crud_deployments.derive_status(latest_status, latest_type),
             created_at=first_created_at,
         ))
 
@@ -426,106 +412,13 @@ def create_deployment(
     # until the next COMMIT/ROLLBACK on this connection.
     crud_locks.acquire_user_xact_lock(db, current_user.userId)
 
-    # Refuse the create if the target app is soft-deleted.
-    target_app = crud_apps.get_app(db, deployment.appId)
-    if target_app is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"reason": "app_not_found_or_deleted"},
-        )
-
-    # Gate the create on the same visibility rule the list/detail
-    # endpoints use. A student cannot deploy a private app they don't
-    # own, and a non-owner cannot deploy an app without an approved
-    # version. The owner / admin path stays open.
-    # ``ensure_view_app`` raises 403 with the structured payload, so
-    # the frontend receives the same shape it sees on the detail
-    # endpoint when visibility is denied.
-    ensure_view_app(current_user, target_app, db=db)
-
-    # Load the app author's variable declarations so we can enforce
-    # per-variable contracts (``varScope``, ``fileExtensions``) below.
-    # We only do this when the request actually carries variables /
-    # files — for a no-input deploy the round-trip into Git would be
-    # waste. Same parser as ``GET /apps/{id}/variables`` so client and
-    # server agree on which variable is scoped/file/free-text.
-    variable_definitions: list[dict] = []
-    if deployment.userInputVar or deployment.files:
-        release_tag = deployment.releaseTag or "main"
-        try:
-            variable_definitions = load_variable_definitions(target_app, release_tag)
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
-                raise
-            # 400 (no git_link) or 500 (git unreachable) — skip validation,
-            # proceed without variable definitions.
-
-    # Fold the wizard's parallel ``files`` upload into
-    # ``userInputVar.terraform`` before the row gets persisted, so the
-    # rest of this handler — and the worker downstream — sees one
-    # uniform dict. The helper validates base64 / size / per-file and
-    # per-deployment caps; any failure short-circuits with a 4xx and
-    # the row never enters the DB. When variable definitions are
-    # available, the helper also enforces the app author's declared
-    # ``fileExtensions`` filter on each upload name.
-    deployment.userInputVar = attach_files_to_user_input(
-        deployment.userInputVar, deployment.files, variable_definitions or None,
-    )
-
-    # Enforce ``varScope = team|user`` contracts: each value must be a
-    # map whose keys match the deployment's team / user roster. This
-    # is defense-in-depth — the wizard already only renders slots the
-    # user can fill, but a hand-crafted POST could ship unknown keys.
-    if variable_definitions:
-        validate_scoped_user_input(
-            deployment.userInputVar,
-            variable_definitions,
-            deployment.teams or [],
-        )
+    target_app = _resolve_deployable_app(db, current_user, deployment.appId)
+    _enforce_input_contracts(deployment, target_app)
 
     db_deployment = crud_deployments.create_deployment(
         db, deployment, current_user.userId
     )
-
-    user_ids_in_deployment = set()
-    if deployment.teams:
-        teams_data = [
-            {"name": team.name, "userIds": team.userIds}
-            for team in deployment.teams
-        ]
-        crud_teams.create_teams_for_deployment(
-            db=db,
-            deployment_id=db_deployment.deploymentId,
-            teams_data=teams_data,
-        )
-        for team in deployment.teams:
-            user_ids_in_deployment.update(team.userIds)
-
-    if user_ids_in_deployment:
-        crud_deployments.create_user_to_deployments(
-            db=db,
-            deployment_id=db_deployment.deploymentId,
-            user_ids=user_ids_in_deployment,
-        )
-
-    # Parse user input variables
-    try:
-        user_vars = (
-            json.loads(db_deployment.userInputVar) if db_deployment.userInputVar else {}
-        )
-    except Exception:
-        user_vars = {}
-
-    # Format teams for Terraform (team_name: [user_emails])
-    teams_dict = {}
-    if deployment.teams:
-        for team in deployment.teams:
-            team_users = []
-            for user_id in team.userIds:
-                user = crud_users.get_user(db, user_id)
-                if user:
-                    team_users.append({"email": user.email})
-            teams_dict[team.name] = team_users
+    _persist_team_graph(db, db_deployment.deploymentId, deployment.teams)
 
     # Per-user OpenStack credentials are required to deploy. The envelope
     # carries ciphertext only — the worker decrypts in-process. Reading
@@ -552,8 +445,8 @@ def create_deployment(
             str(db_deployment.appId),
             db_deployment.app.git_link,
             db_deployment.releaseTag,
-            user_vars,
-            teams_dict,
+            _persisted_user_vars(db_deployment),
+            _team_email_map(db, deployment.teams),
             openstack_envelope,
         ],
         dispatch_error_label="Could not dispatch deployment task — please retry",
@@ -561,22 +454,153 @@ def create_deployment(
     )
 
     db.refresh(db_deployment)
+    return _deployment_response(
+        db_deployment,
+        status_value=crud_deployments.get_deployment_status(
+            db, db_deployment.deploymentId
+        ),
+        created_at=crud_deployments.get_deployment_created_at(
+            db, db_deployment.deploymentId
+        ),
+    )
 
-    status_value = crud_deployments.get_deployment_status(db, db_deployment.deploymentId)
-    created_at = crud_deployments.get_deployment_created_at(db, db_deployment.deploymentId)
 
-    # Same file-strip rule as the list/detail endpoints: the POST
-    # response shape mirrors the read shape so the frontend can reuse
-    # the same parsing code-path.
-    user_input_var_parsed = parse_and_strip_user_input(db_deployment.userInputVar)
+def _resolve_deployable_app(db: Session, current_user: User, app_id: UUID):
+    """Load the target app and gate the create on the same visibility
+    rule the list/detail endpoints use.
 
+    A student cannot deploy a private app they don't own, and a
+    non-owner cannot deploy an app without an approved version; the
+    owner / admin path stays open. ``ensure_view_app`` raises 403 with
+    the structured payload, so the frontend receives the same shape it
+    sees on the detail endpoint when visibility is denied.
+    """
+    target_app = crud_apps.get_app(db, app_id)
+    if target_app is None:
+        # Soft-deleted apps read as missing here, on purpose.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"reason": "app_not_found_or_deleted"},
+        )
+    ensure_view_app(current_user, target_app, db=db)
+    return target_app
+
+
+def _enforce_input_contracts(deployment: DeploymentCreate, target_app) -> None:
+    """Fold uploaded files into ``userInputVar`` and validate it against
+    the app author's variable declarations.
+
+    Mutates ``deployment.userInputVar`` in place so the rest of the
+    handler — and the worker downstream — sees one uniform dict instead
+    of a payload plus a parallel ``files`` field.
+
+    The author's declarations are only fetched when the request actually
+    carries input; for a no-input deploy the round-trip into Git would
+    be waste. A 422 from the parser is the author's own broken marker
+    and must surface; 400 (no git_link) and 500 (Git unreachable) are
+    infrastructure problems that must not block a deploy, so validation
+    is skipped in those cases.
+    """
+    variable_definitions: list[dict] = []
+    if deployment.userInputVar or deployment.files:
+        release_tag = deployment.releaseTag or "main"
+        try:
+            variable_definitions = load_variable_definitions(target_app, release_tag)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+                raise
+
+    deployment.userInputVar = attach_files_to_user_input(
+        deployment.userInputVar, deployment.files, variable_definitions or None,
+    )
+
+    # ``varScope = team|user`` contracts: each value must be a map whose
+    # keys match this deployment's team / user roster. Defense-in-depth —
+    # the wizard only renders slots the user can fill, but a
+    # hand-crafted POST could ship unknown keys.
+    if variable_definitions:
+        validate_scoped_user_input(
+            deployment.userInputVar,
+            variable_definitions,
+            deployment.teams or [],
+        )
+
+
+def _persist_team_graph(db: Session, deployment_id: UUID, teams) -> None:
+    """Insert the deployment's Team rows and the member access mappings.
+
+    Both inserts join the caller's open transaction, so they commit
+    together with the deployment row and the initial task.
+    """
+    if not teams:
+        return
+    crud_teams.create_teams_for_deployment(
+        db=db,
+        deployment_id=deployment_id,
+        teams_data=[{"name": team.name, "userIds": team.userIds} for team in teams],
+    )
+    member_ids = {user_id for team in teams for user_id in team.userIds}
+    if member_ids:
+        crud_deployments.create_user_to_deployments(
+            db=db,
+            deployment_id=deployment_id,
+            user_ids=member_ids,
+        )
+
+
+def _persisted_user_vars(db_deployment) -> dict:
+    """Read the stored ``userInputVar`` JSON back as the worker's var-set.
+
+    Reads the persisted column rather than the request model so the
+    worker is handed exactly what the database holds. A row that can't
+    be parsed yields an empty var-set — Terraform then falls back on the
+    HCL defaults, which beats failing the dispatch.
+    """
+    if not db_deployment.userInputVar:
+        return {}
+    try:
+        return json.loads(db_deployment.userInputVar)
+    except Exception:
+        return {}
+
+
+def _team_email_map(db: Session, teams) -> dict:
+    """Build the ``{team_name: [{"email": ...}]}`` map Terraform expects.
+
+    The request model carries user IDs; the templates address members by
+    mail address, so each one is resolved here. Unknown IDs are dropped
+    rather than failing the deploy — they cannot become a VM account
+    either way.
+    """
+    if not teams:
+        return {}
+    email_map = {}
+    for team in teams:
+        members = (crud_users.get_user(db, user_id) for user_id in team.userIds)
+        email_map[team.name] = [{"email": u.email} for u in members if u]
+    return email_map
+
+
+def _deployment_response(
+    deployment, *, status_value: str | None, created_at
+) -> DeploymentResponse:
+    """Shape one deployment row for the list and create responses.
+
+    Both endpoints ship the identical projection, including the
+    file-strip rule — base64 payloads are reachable only through the
+    dedicated download route — so the frontend can reuse one parsing
+    code-path. ``status`` and ``created_at`` are passed in because the
+    two callers source them differently: the list endpoint from a bulk
+    task-summary query, the create endpoint from a per-row lookup after
+    its commit.
+    """
     return DeploymentResponse(
-        deploymentId=db_deployment.deploymentId,
-        name=db_deployment.name,
-        appId=db_deployment.appId,
-        userId=db_deployment.userId,
-        releaseTag=db_deployment.releaseTag,
-        userInputVar=user_input_var_parsed,
+        deploymentId=deployment.deploymentId,
+        name=deployment.name,
+        appId=deployment.appId,
+        userId=deployment.userId,
+        releaseTag=deployment.releaseTag,
+        userInputVar=parse_and_strip_user_input(deployment.userInputVar),
         status=status_value,
         created_at=created_at,
     )
