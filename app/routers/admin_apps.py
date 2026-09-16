@@ -7,6 +7,7 @@ from app.crud import app_version_approvals as crud_approvals
 from app.crud import apps as crud_apps
 from app.database import get_db
 from app.models import User
+from app.routers.dependencies import APP_NOT_FOUND
 from app.schemas import (
     AppResponse,
     AppVersionApprovalDecision,
@@ -156,6 +157,6 @@ def _require_app(db: Session, app_id: UUID):
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="App not found",
+            detail=APP_NOT_FOUND,
         )
     return app

@@ -11,6 +11,7 @@ from app.crud import app_version_approvals as crud_approvals
 from app.crud import apps as crud_apps
 from app.database import get_db
 from app.models import User, UserRole
+from app.routers.dependencies import APP_NOT_FOUND
 from app.schemas import (
     AppCreate,
     AppResponse,
@@ -31,6 +32,21 @@ from app.utils.capabilities import (
 from app.utils.keycloak_auth import get_current_user_keycloak
 
 logger = logging.getLogger(__name__)
+
+
+def _require_app(db: Session, app_id: UUID):
+    """Load an app by id, or 404.
+
+    Soft-deleted apps read as missing — ``crud_apps.get_app`` filters
+    them out — which is what every endpoint here wants.
+    """
+    app = crud_apps.get_app(db, app_id)
+    if not app:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=APP_NOT_FOUND,
+        )
+    return app
 
 
 def _version_tag(version) -> str:
@@ -210,12 +226,7 @@ def get_app_variables(
     - default: Default value (if any)
     - required: Whether variable is required
     """
-    app = crud_apps.get_app(db, app_id)
-    if not app:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="App not found"
-        )
+    app = _require_app(db, app_id)
 
     # Check access permission. ``ensure_view_app`` enforces the matrix:
     # owner OR admin sees private/unapproved, others need the
@@ -303,12 +314,7 @@ def update_app(
 
     Owner OR admin only.
     """
-    app = crud_apps.get_app(db, app_id)
-    if not app:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="App not found"
-        )
+    app = _require_app(db, app_id)
 
     # Check access permission — owner-or-admin only.
     ensure_edit_app(current_user, app)
@@ -344,9 +350,7 @@ def submit_version(
     Owner OR admin only. A REJECTED version can be resubmitted; PENDING
     and APPROVED cannot.
     """
-    app = crud_apps.get_app(db, app_id)
-    if not app:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    app = _require_app(db, app_id)
 
     ensure_submit_app_version(current_user, app)
 
@@ -402,9 +406,7 @@ def withdraw_version(
     Owner OR admin only. Deletes the approval entry so the version
     appears as unsubmitted again.
     """
-    app = crud_apps.get_app(db, app_id)
-    if not app:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    app = _require_app(db, app_id)
 
     ensure_submit_app_version(current_user, app)
     crud_approvals.withdraw(db, app_id=app_id, version_tag=version_tag)
@@ -454,12 +456,7 @@ def delete_app(
 
     Owner OR admin only.
     """
-    app = crud_apps.get_app(db, app_id)
-    if not app:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="App not found"
-        )
+    app = _require_app(db, app_id)
 
     # Check access permission — owner-or-admin only.
     ensure_delete_app(current_user, app)

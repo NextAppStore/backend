@@ -7,6 +7,7 @@ from app.crud import courses as crud_courses
 from app.crud import users as crud_users
 from app.database import get_db
 from app.models import CourseTeacher, User, UserRole
+from app.routers.dependencies import COURSE_NOT_FOUND
 from app.schemas import (
     CourseCreate,
     CourseMembersUpdate,
@@ -23,6 +24,22 @@ from app.utils.permissions import (
 )
 
 router = APIRouter()
+
+
+def _require_course(db: Session, course_id: UUID):
+    """Load a course by id, or 404.
+
+    Eight endpoints open with this exact lookup. Having it once means
+    the 404 body cannot drift between them, and a new course endpoint
+    gets the same behaviour by default rather than by copy-paste.
+    """
+    course = crud_courses.get_course(db, course_id)
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=COURSE_NOT_FOUND,
+        )
+    return course
 
 
 def _find_course_teacher(db: Session, course_id: UUID, user_id: UUID):
@@ -71,12 +88,7 @@ def get_course(
     current_user: User = Depends(get_current_user_keycloak)
 ):
     """Get course by ID with all users"""
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    course = _require_course(db, course_id)
     return course
 
 
@@ -134,12 +146,7 @@ def update_course(
     structured ``course_edit_forbidden`` payload. 404 takes precedence
     over 403 for nonexistent courses.
     """
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    course = _require_course(db, course_id)
     ensure_edit_course(current_user, course, db)
 
     updated = crud_courses.update_course(db, course_id, course_update)
@@ -148,7 +155,7 @@ def update_course(
         # surface as 404 to keep the response contract stable.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
+            detail=COURSE_NOT_FOUND,
         )
     return updated
 
@@ -170,19 +177,14 @@ def delete_course(
     row goes away — no user account is destroyed; ``course_teachers``
     rows cascade away via ON DELETE CASCADE.
     """
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    course = _require_course(db, course_id)
     ensure_edit_course(current_user, course, db)
 
     success = crud_courses.delete_course(db, course_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
+            detail=COURSE_NOT_FOUND,
         )
     return None
 
@@ -205,12 +207,7 @@ def list_course_members(
 
     Teacher/Admin only — student rosters are management data.
     """
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    _require_course(db, course_id)  # 404 if the course is gone
     return crud_courses.get_course_members(db, course_id)
 
 
@@ -232,12 +229,7 @@ def add_course_members(
     user-ids exist in our DB. Returns the post-update member list of
     the course so the UI can refresh without a second round trip.
     """
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    _require_course(db, course_id)  # 404 if the course is gone
 
     crud_courses.add_users_to_course(db, course_id, payload.userIds)
     return crud_courses.get_course_members(db, course_id)
@@ -258,12 +250,7 @@ def remove_course_member(
     Returns 404 if the user isn't actually enrolled in this course —
     we never silently detach somebody from a different course.
     """
-    course = crud_courses.get_course(db, course_id)
-    if not course:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Course not found"
-        )
+    _require_course(db, course_id)  # 404 if the course is gone
 
     removed = crud_courses.remove_user_from_course(db, course_id, user_id)
     if not removed:

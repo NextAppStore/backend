@@ -21,6 +21,14 @@ from app.database import get_db
 from app.models import Deployment, TaskType, User, UserRole
 from app.models import Task as TaskModel  # for ad-hoc state queries
 from app.routers import deployments_stream
+from app.routers.dependencies import (
+    require_deployment_access,
+    require_deployment_access_detail,
+    require_deployment_owner_view,
+    require_operate_deployment,
+    require_operate_deployment_detail,
+    require_own_access,
+)
 from app.schemas import (
     DeploymentCreate,
     DeploymentDetail,
@@ -51,15 +59,11 @@ from app.services.tf_state_parser import parse_tf_state
 from app.utils.app_image import serialize_app
 from app.utils.capabilities import (
     can_view_deployment_owner,
-    ensure_operate_deployment,
-    ensure_resend_access,
     ensure_view_app,
-    ensure_view_deployment_owner,
     get_my_course_teacher_ids,
 )
 from app.utils.keycloak_auth import get_current_user_keycloak
 from app.utils.permissions import (
-    ensure_deployment_access,
     is_deployment_owner_view,
 )
 
@@ -269,6 +273,7 @@ def list_deployments(
 def get_deployment(
     deployment_id: UUID,
     include_logs: bool = False,
+    deployment: Deployment = Depends(require_deployment_access_detail),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak)
 ):
@@ -280,16 +285,6 @@ def get_deployment(
     - Terraform outputs
     - Optionally: full logs (use include_logs=true)
     """
-    deployment = crud_deployments.get_deployment_with_details(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found"
-        )
-
-    # Check access permission
-    ensure_deployment_access(deployment, current_user, db)
-
     # Get latest task
     latest_task = crud_deployments.get_latest_task(db, deployment_id)
     task_summary = None
@@ -628,6 +623,7 @@ def _deployment_response(
 @router.delete("/{deployment_id}")
 def delete_deployment(
     deployment_id: UUID,
+    deployment: Deployment = Depends(require_operate_deployment_detail),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -636,18 +632,12 @@ def delete_deployment(
     Restricted to the owner-view (creator, teacher, admin). Members
     can read-access the deployment but never tear it down.
     """
-    deployment = crud_deployments.get_deployment_with_details(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-
-    # Destructive operation — uses the operate gate, which is
-    # owner-or-admin only. Course-teachers explicitly do NOT get
-    # delete/destroy rights on deployments in their courses; they only
-    # get inspect (logs, infra).
-    ensure_operate_deployment(current_user, deployment, db)
+    # The dependency applies the *operate* gate, which is owner-or-admin
+    # only. Course-teachers explicitly do NOT get delete/destroy rights
+    # on deployments in their courses; they only get inspect (logs,
+    # infra). Kept as a comment rather than in the docstring above —
+    # FastAPI publishes docstrings as the endpoint description, and this
+    # is an implementation detail, not something an API consumer needs.
 
     # Per-deployment advisory lock — serialises against any concurrent
     # POST /pause, /resume or DELETE on the same deployment so the
@@ -977,6 +967,7 @@ def _latest_tf_state_for(deployment_id: UUID, db: Session) -> str | None:
 def list_deployment_resources(
     deployment_id: UUID,
     refresh: bool = True,
+    deployment: Deployment = Depends(require_deployment_owner_view),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -986,17 +977,9 @@ def list_deployment_resources(
     that when polling rapidly to avoid hammering Keystone, or when
     OpenStack is known unavailable and the cached state is good enough.
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    # Inspect-only view — owner, admin, or a course-teacher of the
-    # deployment-owner's course. Course-teachers explicitly do NOT have
-    # operate rights; this endpoint is read-only.
-    ensure_view_deployment_owner(current_user, deployment, db)
-
+    # The dependency applies the inspect-only gate — owner, admin, or a
+    # course-teacher of the deployment-owner's course. Course-teachers
+    # explicitly do NOT have operate rights; this endpoint is read-only.
     state_json = _latest_tf_state_for(deployment_id, db)
     views = build_resource_views(
         db=db,
@@ -1021,6 +1004,7 @@ def list_deployment_resources(
 def get_deployment_resource_detail(
     deployment_id: UUID,
     address: str,
+    deployment: Deployment = Depends(require_deployment_owner_view),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1032,16 +1016,8 @@ def get_deployment_resource_detail(
     MUST exist in the cached state and MUST be a compute instance;
     other categories get 422.
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    # Inspect-only view — course-teachers may read the per-resource
-    # detail; the per-VM redeploy below is operate-gated.
-    ensure_view_deployment_owner(current_user, deployment, db)
-
+    # Inspect-only gate via the dependency — course-teachers may read the
+    # per-resource detail; the per-VM redeploy below is operate-gated.
     if not _TF_ADDRESS_RE.match(address):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1070,6 +1046,7 @@ def get_deployment_resource_detail(
 def redeploy_deployment_resource(
     deployment_id: UUID,
     address: str,
+    deployment: Deployment = Depends(require_operate_deployment),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1087,17 +1064,9 @@ def redeploy_deployment_resource(
     """
     crud_locks.acquire_user_xact_lock(db, current_user.userId)
 
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    # Per-VM redeploy is a mutating operation — operate gate
-    # (owner-or-admin). Course-teachers may inspect the resource via
-    # the GET endpoints above but not bounce it.
-    ensure_operate_deployment(current_user, deployment, db)
-
+    # Per-VM redeploy is a mutating operation, so the dependency applies
+    # the operate gate (owner-or-admin). Course-teachers may inspect the
+    # resource via the GET endpoints above but not bounce it.
     if not _TF_ADDRESS_RE.match(address):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1163,6 +1132,7 @@ def _view_asdict(view) -> dict:
 @router.post("/{deployment_id}/pause", status_code=status.HTTP_202_ACCEPTED)
 def pause_deployment(
     deployment_id: UUID,
+    deployment: Deployment = Depends(require_operate_deployment_detail),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1176,14 +1146,6 @@ def pause_deployment(
     deployment's effective status is recomputed from the new task
     row by ``crud_deployments.get_deployment_status``.
     """
-    deployment = crud_deployments.get_deployment_with_details(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-
-    ensure_operate_deployment(current_user, deployment, db)
     # Hold the per-deployment advisory lock across the status check
     # AND the task insert so a parallel POST /pause can't sneak past
     # ``ensure_action_allowed`` between our read and the
@@ -1214,18 +1176,11 @@ def pause_deployment(
 @router.post("/{deployment_id}/resume", status_code=status.HTTP_202_ACCEPTED)
 def resume_deployment(
     deployment_id: UUID,
+    deployment: Deployment = Depends(require_operate_deployment_detail),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
     """Resume a paused deployment by starting its compute instances."""
-    deployment = crud_deployments.get_deployment_with_details(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-
-    ensure_operate_deployment(current_user, deployment, db)
     # Per-deployment advisory lock — same justification as in
     # ``pause_deployment`` above: keep the status check and the task
     # insert atomic against concurrent /resume / /pause / DELETE
@@ -1263,6 +1218,7 @@ def download_deployment_file(
     deployment_id: UUID,
     var_name: str,
     slot_key: str,
+    deployment: Deployment = Depends(require_deployment_owner_view),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1277,20 +1233,12 @@ def download_deployment_file(
     therefore probe a slot's existence via this endpoint without
     needing a separate metadata response.
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    # Inspect-only view, gated through capabilities so course-teachers
-    # can download the same wizard-uploaded files they can already see
-    # referenced in the inspect view (logs / detail). Owners + admins
-    # keep their access. The list/detail strip-pass already hid the
-    # base64 payload from plain members, so this endpoint stays
-    # restricted to the owner-view set.
-    ensure_view_deployment_owner(current_user, deployment, db)
-
+    # The dependency applies the inspect-only gate, so course-teachers can
+    # download the same wizard-uploaded files they already see referenced
+    # in the inspect view (logs / detail). Owners + admins keep their
+    # access. The list/detail strip-pass already hid the base64 payload
+    # from plain members, so this endpoint stays restricted to the
+    # owner-view set.
     if not deployment.userInputVar:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No files")
     try:
@@ -1348,6 +1296,7 @@ def download_deployment_file(
 @router.get("/{deployment_id}/my-access", response_model=MyAccessResponse)
 def get_my_access(
     deployment_id: UUID,
+    deployment: Deployment = Depends(require_own_access),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1369,15 +1318,8 @@ def get_my_access(
     the app issued no per-user credential for this user — the UI renders
     a "no credentials yet" state rather than treating it as an error.
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    # Self-target → member-view gate. Non-members get 403 here.
-    ensure_resend_access(current_user, deployment, current_user.userId, db)
-
+    # Self-target member-view gate lives in the dependency; non-members
+    # get 403 before this body runs.
     access = deployment_notifier.get_user_access(
         db, deployment_id, current_user.userId
     )
@@ -1402,6 +1344,7 @@ def resend_access_credentials(
     deployment_id: UUID,
     team_id: UUID,
     user_id: UUID,
+    deployment: Deployment = Depends(require_deployment_access),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -1425,14 +1368,6 @@ def resend_access_credentials(
       * ``no_credentials_for_user`` → 409 (template didn't issue
         per-user creds, or matcher missed despite the fuzzy logic)
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Deployment not found",
-        )
-    ensure_deployment_access(deployment, current_user, db)
-
     # Members may only re-send their own access mail. Owner-view
     # callers (creator, teacher, admin) can resend for anyone in
     # any team. Without this check a student in team A could trigger

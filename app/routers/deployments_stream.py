@@ -14,15 +14,15 @@ import json
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.crud import deployments as crud_deployments
 from app.database import get_db
-from app.models import TaskStatus, User
+from app.models import Deployment, TaskStatus, User
+from app.routers.dependencies import require_deployment_owner_view
 from app.services.deployment_pubsub import pubsub
-from app.utils.capabilities import ensure_view_deployment_owner
 from app.utils.keycloak_auth import get_current_user_keycloak
 
 router = APIRouter()
@@ -55,6 +55,12 @@ router = APIRouter()
 async def stream_deployment_events(
     deployment_id: UUID,
     request: Request,
+    # Inspect-only gate. The live stream surfaces task-log lines (raw
+    # worker stdout incl. terraform output, packer build chatter, …);
+    # course-teachers of the deployment-owner's course are in the
+    # inspect set, owners and admins keep their access, and plain
+    # members still see metadata only.
+    deployment: Deployment = Depends(require_deployment_owner_view),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
@@ -65,16 +71,6 @@ async def stream_deployment_events(
     before this handler runs. After auth we attach to the in-process
     pubsub for this deployment and forward every event to the client.
     """
-    deployment = crud_deployments.get_deployment(db, deployment_id)
-    if not deployment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
-    # Inspect-only view via capabilities. The live stream surfaces
-    # task-log lines (raw worker stdout incl. terraform output, packer
-    # build chatter, etc.); course-teachers of the deployment-owner's
-    # course are in the inspect set, owners and admins keep their access,
-    # and plain members still see metadata only.
-    ensure_view_deployment_owner(current_user, deployment, db)
-
     # Snapshot the latest task once before subscribing so the client
     # gets a meaningful initial state. Reading happens before the
     # generator yields its first chunk to avoid the "subscribed but
