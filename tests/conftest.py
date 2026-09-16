@@ -66,7 +66,7 @@ from app.models import (  # noqa: F401  (importiert für seitliche Effekte / Met
     User,
     UserRole,
 )
-from app.utils.keycloak_auth import get_current_user_keycloak
+from app.utils.permissions import get_current_user as get_current_user_keycloak
 
 # ----------------------------------------------------------------
 # Engine — einmal pro Test-Prozess.
