@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     # slash. Falls back to the first CORS origin in dev.
     APP_BASE_URL: str = "http://localhost:5173"
 
+    # Public URL of this API as reachable from the outside world, *including*
+    # any path prefix a reverse proxy adds (e.g. "/api"). Needed for URLs we
+    # hand to a third party (like the LTI redirect_uri Moodle validates
+    # against its registered tool config) — ``request.base_url`` can't be
+    # used for that since the deployment nginx strips the "/api/" prefix
+    # before proxying to this service and never forwards it back
+    # (no X-Forwarded-Prefix), so the app has no way to see it was reached
+    # via "/api" from inside a request.
+    API_BASE_URL: str = "http://localhost:8000"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -47,7 +47,8 @@ def lti_client(db):
 # ----------------------------------------------------------------
 @pytest.mark.unit
 def test_login_get_happy_path_redirects_to_platform(lti_client):
-    with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER):
+    with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
+         patch.object(settings, "API_BASE_URL", "https://appstore.example/api"):
         resp = lti_client.get(
             "/lti/login",
             params={"iss": TEST_ISSUER, "login_hint": "hint-1", "client_id": "client-1"},
@@ -57,11 +58,13 @@ def test_login_get_happy_path_redirects_to_platform(lti_client):
     assert location.startswith(f"{TEST_ISSUER}/mod/lti/auth.php?")
     assert "state=" in location
     assert "nonce=" in location
+    assert "redirect_uri=https%3A%2F%2Fappstore.example%2Fapi%2Flti%2Flaunch" in location
 
 
 @pytest.mark.unit
 def test_login_post_form_happy_path_redirects_to_platform(lti_client):
-    with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER):
+    with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
+         patch.object(settings, "API_BASE_URL", "https://appstore.example/api"):
         resp = lti_client.post(
             "/lti/login",
             data={"iss": TEST_ISSUER, "login_hint": "hint-1", "client_id": "client-1"},
