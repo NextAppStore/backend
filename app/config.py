@@ -20,6 +20,29 @@ class Settings(BaseSettings):
     KEYCLOAK_CLIENT_ID: str = "appstore-backend"
     KEYCLOAK_CLIENT_SECRET: str = ""  # Set via environment variable
 
+    # LTI 1.3 — Moodle as a second identity source (JIT-provisions the
+    # same ``users`` table as Keycloak, see app/utils/lti_auth.py).
+    # LTI_PLATFORM_ISSUER/CLIENT_ID/DEPLOYMENT_ID come from the tool
+    # registration on the Moodle side (m_lti_types); JWKS_URL is Moodle's
+    # public-key endpoint used to verify the launch id_token's signature.
+    LTI_PLATFORM_ISSUER: str = ""
+    LTI_PLATFORM_JWKS_URL: str = ""
+    # Optional Host header override for the JWKS fetch. Needed whenever
+    # the network path to the platform (e.g. a container-to-host hop in
+    # local dev, or an internal LB hostname in prod) differs from the
+    # platform's public hostname that its vhost/routing actually matches
+    # on — without this, the request 404s even though LTI_PLATFORM_ISSUER
+    # is correct for token validation.
+    LTI_PLATFORM_JWKS_HOST_HEADER: str = ""
+    LTI_CLIENT_ID: str = ""
+    LTI_DEPLOYMENT_ID: str = ""
+    # Symmetric secret used to sign/verify the short-lived backend-issued
+    # session JWT minted after a successful LTI launch (HS256). Separate
+    # from CREDENTIAL_ENCRYPTION_KEY — different purpose, different
+    # rotation schedule.
+    LTI_SESSION_SECRET: str = ""
+    LTI_SESSION_TOKEN_TTL_SECONDS: int = 3600
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
