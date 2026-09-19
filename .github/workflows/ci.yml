@@ -548,7 +548,7 @@ jobs:
       - name: Trigger staging deployment
         run: |
           gh workflow run staging.yml \
-            --repo six7-click-n-deploy/deployment \
+            --repo NextAppStore/deployment \
             --ref main
         env:
           GH_TOKEN: ${{ secrets.DEPLOYMENT_PAT }}
