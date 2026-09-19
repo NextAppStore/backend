@@ -100,9 +100,16 @@ def _fetch_jwks() -> dict:
     headers = {}
     if settings.LTI_PLATFORM_JWKS_HOST_HEADER:
         headers["Host"] = settings.LTI_PLATFORM_JWKS_HOST_HEADER
-    resp = requests.get(settings.LTI_PLATFORM_JWKS_URL, headers=headers, timeout=5)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.get(settings.LTI_PLATFORM_JWKS_URL, headers=headers, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        logger.error("Failed to fetch LTI platform JWKS from %s: %s", settings.LTI_PLATFORM_JWKS_URL, e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not reach the LTI platform's key endpoint to verify the launch",
+        )
 
 
 def _get_jwks(*, force_refresh: bool = False) -> dict:

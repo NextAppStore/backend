@@ -214,6 +214,16 @@ def test_fetch_jwks_sends_host_header_when_configured():
 
 
 @pytest.mark.unit
+def test_fetch_jwks_network_failure_raises_502_not_bare_exception():
+    with patch.object(
+        lti_auth.requests, "get", side_effect=lti_auth.requests.ConnectionError("boom")
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            lti_auth._fetch_jwks()
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.unit
 def test_jwks_has_kid_true_and_false():
     jwks = {"keys": [{"kid": "a"}, {"kid": "b"}]}
     assert lti_auth._jwks_has_kid(jwks, "a") is True
