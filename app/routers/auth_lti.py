@@ -53,8 +53,7 @@ async def lti_login(request: Request):
             detail="Unknown LTI platform issuer",
         )
 
-    base_url = str(request.base_url).rstrip("/")
-    redirect_uri = f"{base_url}/lti/launch"
+    redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/lti/launch"
 
     state, nonce = create_login_attempt()
     redirect_target = build_platform_auth_redirect(
