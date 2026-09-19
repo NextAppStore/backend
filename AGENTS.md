@@ -11,9 +11,9 @@
   - `openapi.json` ist die verbindliche Single Source of Truth (SSOT) für das Vue-Frontend. Sämtliche TypeScript-Typen und API-Clients werden direkt hieraus abgeleitet.
   - **Mandatory Export Rule:** Bei jeder Modifikation an FastAPI-Routern (`app/routers/`), Request-/Response-Modellen (`app/schemas.py`) oder Endpunkt-Parametern **muss** die Spezifikation vor Abschluss des Tasks über die Docker-Sandbox neu exportiert werden:
     ```bash
-    python3 harness/sandbox.py python3 backend/export_openapi.py
+    python3 ../agentic-harness/sandbox.py python3 backend/export_openapi.py
     # oder über den CLI-Alias:
-    python3 harness/sandbox.py python3 backend/api.py
+    python3 ../agentic-harness/sandbox.py python3 backend/api.py
     ```
   - **Invariante:** Ein Feature oder Refactoring gilt als **unvollständig**, solange Änderungen am Backend-Code nicht in `backend/openapi.json` synchronisiert und versioniert sind.
 
@@ -27,7 +27,7 @@
 - **Autogenerierung & Validierung gegen lokale Sandbox-PostgreSQL:**
   - Migrationen müssen innerhalb der Docker-Sandbox mit initialisierter Test-PostgreSQL generiert und unmittelbar via `upgrade head` verifiziert werden:
     ```bash
-    python3 harness/sandbox.py "service postgresql start >/dev/null 2>&1 && \
+    python3 ../agentic-harness/sandbox.py "service postgresql start >/dev/null 2>&1 && \
       su - postgres -c \"psql -c \\\"CREATE USER testuser WITH PASSWORD 'testpass' SUPERUSER;\\\"\" >/dev/null 2>&1 || true; \
       su - postgres -c \"createdb -O testuser testdb\" >/dev/null 2>&1 || true; \
       export DATABASE_URL=\"postgresql+psycopg2://testuser:testpass@localhost:5432/testdb\" && \
