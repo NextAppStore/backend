@@ -65,32 +65,3 @@
     2. Commit der DB-Transaktion.
     3. Asynchroner Dispatch an Celery außerhalb der offenen Transaktion.
     4. Sofortige HTTP 202 (Accepted) Response an den Client mit `taskId` und Statusabfrage-Endpunkt.
-
----
-
-## 5. Deterministischer Self-Correction Loop (Sandbox-Verifikation)
-
-- **Strict Host Isolation:**
-  - Führe **niemals** Linter, Tests, Paketmanager (`poetry`) oder DB-Befehle direkt auf dem Host-Betriebssystem aus. Alle Ausführungen erfolgen gekapselt über die Docker-Sandbox (`harness/sandbox.py`).
-- **Gestaffelter Verifikationsablauf vor Task-Abschluss:**
-  1. **Stufe 1 – Linter & Codequalität:**
-     ```bash
-     python3 harness/sandbox.py ruff check backend/
-     ```
-  2. **Stufe 2 – Fast Unit Tests:**
-     ```bash
-     python3 harness/sandbox.py pytest backend/tests/unit/ -q --no-cov
-     # oder kombiniert via Flag:
-     python3 harness/sandbox.py --fast
-     ```
-  3. **Stufe 3 – Gezielte Komponenten- & Integrationstests:**
-     ```bash
-     python3 harness/sandbox.py pytest backend/tests/<ziel_test>.py -q --no-cov
-     ```
-  4. **Stufe 4 – Schema- & Contract-Validierung:**
-     Bei Änderungen an Routern, Models oder Schemas muss `openapi.json` aktualisiert werden:
-     ```bash
-     python3 harness/sandbox.py python3 backend/export_openapi.py
-     ```
-- **Autonome Fehleranalyse & Iteration:**
-  - Tritt ein Fehler auf (Exit-Code != 0), analysiert der Agent die Fehlerausgabe (Linter-Meldung, Pytest-Failure, Traceback) eigenständig, wendet zielgerichtete Korrekturen an und wiederholt die Verifikation deterministisch, bis alle Prüfungen mit `exit code: 0` erfolgreich durchlaufen.
