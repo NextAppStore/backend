@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # rotation schedule.
     LTI_SESSION_SECRET: str = ""
     LTI_SESSION_TOKEN_TTL_SECONDS: int = 3600
+    # Shared store for the OIDC state/nonce pairs minted in /lti/login and
+    # consumed in /lti/launch. Must be shared across processes — uvicorn
+    # runs multiple workers, and Moodle's login and launch requests can
+    # land on different ones, so an in-memory dict here would randomly
+    # 401 launches that hit a worker that never saw the /lti/login call.
+    # Separate DB index from CELERY_RESULT_BACKEND (db 0) on the same
+    # Redis instance so this never collides with Celery's keys.
+    LTI_NONCE_REDIS_URL: str = "redis://redis:6379/1"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]

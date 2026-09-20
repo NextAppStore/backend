@@ -67,6 +67,35 @@ def test_map_lti_roles_does_not_substring_match():
 # ----------------------------------------------------------------
 # nonce / state replay protection
 # ----------------------------------------------------------------
+class _FakeRedis:
+    """Minimal in-memory stand-in for the two redis-py calls lti_auth
+    makes (setex, getdel) — enough to exercise the real single-use/TTL
+    logic without a live Redis, mirroring _fake_response() below for
+    JWKS fetches."""
+
+    def __init__(self):
+        self._store: dict[str, tuple[str, float]] = {}
+
+    def setex(self, key: str, ttl: int, value: str) -> None:
+        self._store[key] = (value, time.time() + ttl)
+
+    def getdel(self, key: str) -> str | None:
+        entry = self._store.pop(key, None)
+        if entry is None:
+            return None
+        value, expiry = entry
+        return value if expiry >= time.time() else None
+
+
+@pytest.fixture(autouse=True)
+def _fake_redis_client():
+    """Isolate the module-level Redis client between tests."""
+    fake = _FakeRedis()
+    lti_auth._redis_client = fake
+    yield fake
+    lti_auth._redis_client = None
+
+
 @pytest.mark.unit
 def test_login_attempt_is_single_use():
     state, nonce = create_login_attempt()
@@ -77,6 +106,15 @@ def test_login_attempt_is_single_use():
 @pytest.mark.unit
 def test_login_attempt_unknown_pair_rejected():
     assert consume_login_attempt("unknown-state", "unknown-nonce") is False
+
+
+@pytest.mark.unit
+def test_login_attempt_expired_pair_rejected(_fake_redis_client):
+    state, nonce = create_login_attempt()
+    key = f"lti_login_attempt:{state}:{nonce}"
+    value, _ = _fake_redis_client._store[key]
+    _fake_redis_client._store[key] = (value, time.time() - 1)  # force expiry
+    assert consume_login_attempt(state, nonce) is False
 
 
 # ----------------------------------------------------------------
