@@ -10,6 +10,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
+import redis
 import requests
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -47,42 +48,45 @@ ADMIN_ROLE_URNS = {
 # ----------------------------------------------------------------
 # NONCE / STATE STORE (OIDC replay protection)
 # ----------------------------------------------------------------
-# In-memory, single-process store for outstanding login attempts. Each
-# entry expires quickly since the OIDC login->launch round trip happens
-# within seconds. A multi-worker deployment would need a shared store
-# (e.g. Redis) instead — flagged for follow-up, not needed for a single
-# dev/staging instance.
+# Shared across processes via Redis — uvicorn runs multiple workers
+# (see docker-compose.staging.yml), and Moodle's /lti/login and
+# /lti/launch requests can land on different ones, so an in-memory
+# dict here would randomly 401 launches that hit a worker that never
+# saw the matching /lti/login call.
 _LOGIN_ATTEMPT_TTL_SECONDS = 300
-_login_attempts: dict[str, float] = {}
-_login_attempts_lock = threading.Lock()
+_redis_client: redis.Redis | None = None
+_redis_lock = threading.Lock()
+
+
+def _get_redis_client() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        with _redis_lock:
+            if _redis_client is None:
+                _redis_client = redis.Redis.from_url(
+                    settings.LTI_NONCE_REDIS_URL, decode_responses=True
+                )
+    return _redis_client
 
 
 def create_login_attempt() -> tuple[str, str]:
     """Generate and record a fresh (state, nonce) pair for one login attempt."""
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    key = f"{state}:{nonce}"
-    now = time.time()
-    with _login_attempts_lock:
-        # Opportunistically sweep expired entries so the store doesn't
-        # grow unbounded across long-running processes.
-        expired = [k for k, exp in _login_attempts.items() if exp < now]
-        for k in expired:
-            del _login_attempts[k]
-        _login_attempts[key] = now + _LOGIN_ATTEMPT_TTL_SECONDS
+    key = f"lti_login_attempt:{state}:{nonce}"
+    _get_redis_client().setex(key, _LOGIN_ATTEMPT_TTL_SECONDS, "1")
     return state, nonce
 
 
 def consume_login_attempt(state: str, nonce: str) -> bool:
     """Verify a (state, nonce) pair was issued by us and not yet used.
 
-    Single-use: a valid pair is removed on success, so a replayed launch
-    with the same values fails the second time.
+    Single-use: a valid pair is removed on success (atomically, via
+    GETDEL), so a replayed launch with the same values fails the second
+    time — including when the replay lands on a different worker.
     """
-    key = f"{state}:{nonce}"
-    with _login_attempts_lock:
-        expiry = _login_attempts.pop(key, None)
-    return expiry is not None and expiry >= time.time()
+    key = f"lti_login_attempt:{state}:{nonce}"
+    return _get_redis_client().getdel(key) is not None
 
 
 # ----------------------------------------------------------------
