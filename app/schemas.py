@@ -352,6 +352,7 @@ class HardwareSpecSchema(BaseModel):
 class NetworkAddressSchema(BaseModel):
     network: str
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
 
@@ -362,6 +363,7 @@ class NetworkPortSchema(BaseModel):
     status: str | None = None
     mac: str | None = None
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     security_group_ids: list[str] = []
 
 

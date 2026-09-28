@@ -456,4 +456,53 @@ def test_addresses_from_non_dict_entry_inside_list_is_skipped() -> None:
     )
     out = _addresses_from(server)
     assert len(out) == 1
+
+
+@pytest.mark.unit
+def test_addresses_from_dual_stack_keeps_both_fixed_ips() -> None:
+    """Dual-Stack-Netz (fixed v4 + fixed v6 auf demselben Port) darf die
+    zweite Fixed-IP nicht mehr verwerfen — Regressionstest fuer den Bug,
+    der Windows-App's IPv6-Adresse im Infrastructure-Tab verschluckt hat."""
+    server = SimpleNamespace(
+        addresses={
+            "dhbwv6": [
+                {
+                    "addr": "10.200.1.42",
+                    "version": 4,
+                    "OS-EXT-IPS:type": "fixed",
+                    "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:dd:ee:ff",
+                },
+                {
+                    "addr": "2001:7c0:1b20:c913:1::2e3",
+                    "version": 6,
+                    "OS-EXT-IPS:type": "fixed",
+                    "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:dd:ee:ff",
+                },
+            ]
+        }
+    )
+    out = _addresses_from(server)
+    assert len(out) == 1
+    row = out[0]
+    assert row.fixed_ip == "10.200.1.42"
+    assert row.fixed_ip_v6 == "2001:7c0:1b20:c913:1::2e3"
+    assert row.mac == "fa:16:3e:dd:ee:ff"
+
+
+@pytest.mark.unit
+def test_addresses_from_dual_stack_without_version_key_falls_back_to_colon_check() -> None:
+    """Fehlt der ``version``-Schluessel (aeltere/andere Clouds), wird v4
+    vs. v6 anhand des Doppelpunkts im Adress-String unterschieden."""
+    server = SimpleNamespace(
+        addresses={
+            "dhbwv6": [
+                {"addr": "10.200.1.43", "OS-EXT-IPS:type": "fixed"},
+                {"addr": "2001:7c0:1b20:c913:1::2e4", "OS-EXT-IPS:type": "fixed"},
+            ]
+        }
+    )
+    out = _addresses_from(server)
+    assert len(out) == 1
+    assert out[0].fixed_ip == "10.200.1.43"
+    assert out[0].fixed_ip_v6 == "2001:7c0:1b20:c913:1::2e4"
     assert out[0].fixed_ip == "10.0.0.7"

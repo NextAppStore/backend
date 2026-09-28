@@ -78,9 +78,14 @@ class HardwareSpec:
 @dataclass
 class NetworkAddress:
     """One entry per NIC × IP. Networks with multiple addresses (fixed
-    + floating) show up as several rows under the same network name."""
+    + floating) show up as several rows under the same network name.
+
+    ``fixed_ip``/``fixed_ip_v6`` are separate fields, not a list, because a
+    dual-stack network (fixed v4 + fixed v6 on the same port) is the only
+    multi-fixed-IP case observed so far — see ``_addresses_from``."""
     network: str
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
 
@@ -93,6 +98,7 @@ class NetworkPort:
     status: str | None
     mac: str | None
     fixed_ip: str | None
+    fixed_ip_v6: str | None = None
     security_group_ids: list[str] = field(default_factory=list)
 
 
@@ -302,16 +308,26 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
         return out
     for p in ports:
         fixed_ips = getattr(p, "fixed_ips", None) or []
-        fixed_ip = None
-        if fixed_ips:
-            # Each entry is ``{"ip_address": ..., "subnet_id": ...}``.
-            fixed_ip = (fixed_ips[0] or {}).get("ip_address")
+        # A dual-stack network gives the port one fixed_ips entry per
+        # subnet (v4 + v6) — walk all of them instead of only fixed_ips[0],
+        # otherwise the second (usually v6) address is silently dropped.
+        fixed_ip = fixed_ip_v6 = None
+        for entry in fixed_ips:
+            addr = (entry or {}).get("ip_address")
+            if not addr:
+                continue
+            if _is_ipv6_address(addr):
+                if fixed_ip_v6 is None:
+                    fixed_ip_v6 = addr
+            elif fixed_ip is None:
+                fixed_ip = addr
         out.append(
             NetworkPort(
                 port_id=str(getattr(p, "id", None) or ""),
                 network_id=getattr(p, "network_id", None),
                 status=getattr(p, "status", None),
                 mac=getattr(p, "mac_address", None),
+                fixed_ip_v6=fixed_ip_v6,
                 fixed_ip=fixed_ip,
                 security_group_ids=list(getattr(p, "security_group_ids", None) or []),
             )
@@ -489,13 +505,23 @@ def _hardware_from(server: Any) -> HardwareSpec:
     )
 
 
+def _is_ipv6_address(addr: str) -> bool:
+    """Cheap IPv4/IPv6 discriminator for cases where OpenStack doesn't hand
+    us an explicit version tag. IPv6 literals always contain ``:``, IPv4
+    literals never do — same heuristic ``Windows-App/terraform/main.tf``
+    uses at the Terraform layer for the identical distinction."""
+    return ":" in addr
+
+
 def _addresses_from(server: Any) -> list[NetworkAddress]:
-    """Flatten the ``addresses`` dict into one row per (network, IP).
+    """Flatten the ``addresses`` dict into one row per network.
 
     OpenStack's ``addresses`` is ``{network_name: [{"addr": ..., "type":
-    "fixed"|"floating", ...}, ...]}``. We pair fixed and floating IPs
-    that share the same network name into a single row when both
-    exist, otherwise emit one row per address.
+    "fixed"|"floating", "version": 4|6, ...}, ...]}``. A dual-stack network
+    (fixed v4 + fixed v6 on the same port) produces two "fixed" entries for
+    the same network — both are kept (in ``fixed_ip``/``fixed_ip_v6``)
+    instead of the second one being silently dropped. Fixed and floating
+    IPs that share the same network name are paired into a single row.
     """
     raw = getattr(server, "addresses", None) or {}
     if not isinstance(raw, dict):
@@ -504,7 +530,7 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
     for network_name, entries in raw.items():
         if not isinstance(entries, list):
             continue
-        fixed_ip = floating_ip = mac = None
+        fixed_ip = fixed_ip_v6 = floating_ip = mac = None
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -512,15 +538,22 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
             kind = entry.get("OS-EXT-IPS:type") or entry.get("type")
             if kind == "floating":
                 floating_ip = addr
-            else:
+            elif addr is not None:
                 # Some clouds omit ``OS-EXT-IPS:type``; assume fixed.
-                if fixed_ip is None:
+                version = entry.get("version")
+                is_v6 = version == 6 if version in (4, 6) else _is_ipv6_address(addr)
+                if is_v6:
+                    if fixed_ip_v6 is None:
+                        fixed_ip_v6 = addr
+                elif fixed_ip is None:
                     fixed_ip = addr
+                if mac is None:
                     mac = entry.get("OS-EXT-IPS-MAC:mac_addr") or entry.get("mac_addr")
         out.append(
             NetworkAddress(
                 network=str(network_name),
                 fixed_ip=fixed_ip,
+                fixed_ip_v6=fixed_ip_v6,
                 floating_ip=floating_ip,
                 mac=mac,
             )
