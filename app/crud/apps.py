@@ -85,6 +85,9 @@ def create_app(db: Session, app: AppCreate, user_id: UUID) -> App:
         git_link=app.git_link,
         is_private=app.is_private,
         userId=user_id,
+        vm_topology=app.vm_topology,
+        requirements=app.requirements,
+        recommended_for=app.recommended_for,
     )
     db.add(db_app)
     db.commit()
