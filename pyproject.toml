@@ -48,6 +48,10 @@ jinja2 = ">=3.1.0"
 # (CVE-2026-59890): MANIFEST.in exclusions bypassed on macOS APFS/HFS+
 # via NFD filenames. Fixed in 83.0.0.
 setuptools = ">=83.0.0"
+# Transitive via starlette/httpx. Pinned to >=4.14.2 to close CVE-2026-63374
+# and CVE-2026-64847. Fixed in 4.14.2.
+anyio = ">=4.14.2"
+
 
 [tool.poetry.group.dev.dependencies]
 # Poetry 2.x dependency-group syntax. The older
