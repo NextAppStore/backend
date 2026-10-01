@@ -159,6 +159,7 @@ def _vm_for_team(outputs: dict[str, Any] | None, team_name: str) -> dict[str, An
         "url": raw.get("code_server_url") or raw.get("url"),
         "floating_ip": raw.get("floating_ip"),
         "fixed_ip": raw.get("fixed_ip"),
+        "fixed_ip_v6": raw.get("fixed_ip_v6"),
         "ips": _output_ips(raw, "floating_ip", "fixed_ip"),
         "instance_name": raw.get("instance_name"),
     }
@@ -286,6 +287,7 @@ def _access_for_user(
         "username": raw.get("username") or suffix,
         "password": password,
         "ip": raw.get("ip"),
+        "ip_v6": raw.get("ip_v6"),
         "ips": _output_ips(raw, "ip"),
         "port": raw.get("port"),
         "auth_type": auth_type,
