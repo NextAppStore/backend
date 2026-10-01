@@ -405,6 +405,32 @@ def test_dual_stack_outputs_reach_user_and_owner_templates(suffix):
 
 
 @pytest.mark.unit
+def test_vm_for_team_and_access_pass_through_fixed_ip_v6():
+    user = _make_user(username="alice", email="alice@example.com")
+    outputs = _terraform_outputs_for("Team-1", user)
+    outputs["team_vms"]["value"]["Team-1"]["fixed_ip_v6"] = "2001:db8::10"
+    outputs["user_accounts"]["value"]["Team-1-alice"]["ip_v6"] = "2001:db8::20"
+
+    vm = deployment_notifier._vm_for_team(outputs, "Team-1")
+    access = deployment_notifier._access_for_user(outputs, "Team-1", user)
+
+    assert vm["fixed_ip_v6"] == "2001:db8::10"
+    assert access["ip_v6"] == "2001:db8::20"
+
+
+@pytest.mark.unit
+def test_vm_for_team_and_access_fixed_ip_v6_defaults_to_none():
+    user = _make_user(username="alice", email="alice@example.com")
+    outputs = _terraform_outputs_for("Team-1", user)
+
+    vm = deployment_notifier._vm_for_team(outputs, "Team-1")
+    access = deployment_notifier._access_for_user(outputs, "Team-1", user)
+
+    assert vm["fixed_ip_v6"] is None
+    assert access["ip_v6"] is None
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("extra", [None, "2001:db8::10", {}])
 def test_invalid_optional_ips_keep_legacy_access(extra):
     assert deployment_notifier._output_ips({"ip": "192.0.2.10", "ips": extra}, "ip") == [

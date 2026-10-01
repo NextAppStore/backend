@@ -36,13 +36,13 @@ import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.config import settings
+from app.utils.net import ip_version
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +76,8 @@ def format_endpoint(host: str, port: int | str | None = None) -> str:
     if port is None or port == "":
         return host
     bare_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-    try:
-        if ip_address(bare_host).version == 6:
-            host = f"[{bare_host}]"
-    except ValueError:
-        pass  # DNS names are valid hosts too.
+    if ip_version(bare_host) == 6:
+        host = f"[{bare_host}]"
     return f"{host}:{port}"
 
 
