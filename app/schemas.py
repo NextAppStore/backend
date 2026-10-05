@@ -349,11 +349,25 @@ class HardwareSpecSchema(BaseModel):
     launched_at: str | None = None
 
 
+class IPAddressSchema(BaseModel):
+    address: str
+    version: Literal[4, 6] | None = None
+    type: str
+    mac: str | None = None
+
+
 class NetworkAddressSchema(BaseModel):
     network: str
     fixed_ip: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
+    ips: list[IPAddressSchema] = Field(default_factory=list)
+
+
+class PortIPAddressSchema(BaseModel):
+    address: str
+    version: Literal[4, 6] | None = None
+    subnet_id: str | None = None
 
 
 class NetworkPortSchema(BaseModel):
@@ -363,6 +377,7 @@ class NetworkPortSchema(BaseModel):
     mac: str | None = None
     fixed_ip: str | None = None
     security_group_ids: list[str] = []
+    fixed_ips: list[PortIPAddressSchema] = Field(default_factory=list)
 
 
 class SecurityGroupSummarySchema(BaseModel):

@@ -299,7 +299,10 @@ def test_resource_detail_loads_stage2(
     port.network_id = "net-1"
     port.status = "ACTIVE"
     port.mac_address = "fa:16:00:00:00:01"
-    port.fixed_ips = [{"ip_address": "10.0.0.10", "subnet_id": "sn-1"}]
+    port.fixed_ips = [
+        {"ip_address": "10.0.0.10", "subnet_id": "sn-1"},
+        {"ip_address": "2001:db8::10", "subnet_id": "sn-6"},
+    ]
     port.security_group_ids = ["sg-1"]
     patched_user_connection.network.ports.return_value = iter([port])
 
@@ -339,6 +342,11 @@ def test_resource_detail_loads_stage2(
     assert body["hardware"]["image_name"] == "ubuntu-22.04"
     assert len(body["ports"]) == 1
     assert body["ports"][0]["status"] == "ACTIVE"
+    assert body["ports"][0]["fixed_ip"] == "10.0.0.10"
+    assert body["ports"][0]["fixed_ips"] == [
+        {"address": "10.0.0.10", "version": 4, "subnet_id": "sn-1"},
+        {"address": "2001:db8::10", "version": 6, "subnet_id": "sn-6"},
+    ]
     assert len(body["security_groups"]) == 1
     assert body["security_groups"][0]["ingress_rules"] == 2
     assert body["security_groups"][0]["egress_rules"] == 1
@@ -441,3 +449,24 @@ def test_redeploy_rejects_unknown_address(
     assert response.status_code == 404
     assert response.json()["detail"]["reason"] == "resource_not_in_state"
     assert not patched_celery_send.called
+
+
+@pytest.mark.integration
+def test_list_resources_preserves_dual_stack_addresses(
+    client, db, mock_user, patched_user_connection
+):
+    _ensure_user_credentials(db, mock_user)
+    deployment = _seed_deployment_with_state(db, mock_user, _ensure_app(db, mock_user))
+    server = _make_server_mock(server_id="uuid-vm-a")
+    server.addresses["shared-net"].append({"addr": "2001:db8::10", "version": 6})
+    patched_user_connection.compute.find_server.return_value = server
+    response = client.get(f"/deployments/{deployment.deploymentId}/resources")
+    assert response.status_code == 200
+    vm = next(r for r in response.json()["resources"] if r["category"] == "instance")
+    network = vm["addresses"][0]
+    assert network["fixed_ip"] == "10.0.0.10"
+    assert network["floating_ip"] == "10.0.0.20"
+    assert [(ip["address"], ip["version"], ip["type"]) for ip in network["ips"]] == [
+        ("10.0.0.10", 4, "fixed"), ("10.0.0.20", 4, "floating"),
+        ("2001:db8::10", 6, "fixed"),
+    ]

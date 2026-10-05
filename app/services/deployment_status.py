@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -76,13 +77,29 @@ class HardwareSpec:
 
 
 @dataclass
+class IPAddress:
+    """An individual address; family is inferred even if Nova omits version."""
+    address: str
+    version: Literal[4, 6] | None
+    type: str
+    mac: str | None = None
+
+
+@dataclass
 class NetworkAddress:
-    """One entry per NIC × IP. Networks with multiple addresses (fixed
-    + floating) show up as several rows under the same network name."""
+    """All addresses on a network, plus legacy single-address fields."""
     network: str
     fixed_ip: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
+    ips: list[IPAddress] = field(default_factory=list)
+
+
+@dataclass
+class PortIPAddress:
+    address: str
+    version: Literal[4, 6] | None
+    subnet_id: str | None = None
 
 
 @dataclass
@@ -94,6 +111,7 @@ class NetworkPort:
     mac: str | None
     fixed_ip: str | None
     security_group_ids: list[str] = field(default_factory=list)
+    fixed_ips: list[PortIPAddress] = field(default_factory=list)
 
 
 @dataclass
@@ -302,18 +320,27 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
         return out
     for p in ports:
         fixed_ips = getattr(p, "fixed_ips", None) or []
-        fixed_ip = None
-        if fixed_ips:
-            # Each entry is ``{"ip_address": ..., "subnet_id": ...}``.
-            fixed_ip = (fixed_ips[0] or {}).get("ip_address")
+        addresses = []
+        for entry in fixed_ips if isinstance(fixed_ips, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            address = entry.get("ip_address")
+            if not isinstance(address, str) or not address:
+                continue
+            addresses.append(PortIPAddress(
+                address=address,
+                version=_ip_version(address),
+                subnet_id=entry.get("subnet_id"),
+            ))
         out.append(
             NetworkPort(
                 port_id=str(getattr(p, "id", None) or ""),
                 network_id=getattr(p, "network_id", None),
                 status=getattr(p, "status", None),
                 mac=getattr(p, "mac_address", None),
-                fixed_ip=fixed_ip,
+                fixed_ip=addresses[0].address if addresses else None,
                 security_group_ids=list(getattr(p, "security_group_ids", None) or []),
+                fixed_ips=addresses,
             )
         )
     return out
@@ -489,13 +516,18 @@ def _hardware_from(server: Any) -> HardwareSpec:
     )
 
 
-def _addresses_from(server: Any) -> list[NetworkAddress]:
-    """Flatten the ``addresses`` dict into one row per (network, IP).
+def _ip_version(address: str) -> Literal[4, 6] | None:
+    try:
+        return ip_address(address).version
+    except ValueError:
+        return None
 
-    OpenStack's ``addresses`` is ``{network_name: [{"addr": ..., "type":
-    "fixed"|"floating", ...}, ...]}``. We pair fixed and floating IPs
-    that share the same network name into a single row when both
-    exist, otherwise emit one row per address.
+
+def _addresses_from(server: Any) -> list[NetworkAddress]:
+    """Keep every address per network without changing legacy selection.
+
+    ``fixed_ip`` remains the first fixed address and ``floating_ip`` the
+    last floating address. Clients needing all families use ``ips``.
     """
     raw = getattr(server, "addresses", None) or {}
     if not isinstance(raw, dict):
@@ -505,11 +537,20 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
         if not isinstance(entries, list):
             continue
         fixed_ip = floating_ip = mac = None
+        ips = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             addr = entry.get("addr")
+            if not isinstance(addr, str) or not addr:
+                continue
             kind = entry.get("OS-EXT-IPS:type") or entry.get("type")
+            ips.append(IPAddress(
+                address=addr,
+                version=_ip_version(addr),
+                type=kind if isinstance(kind, str) else "fixed",
+                mac=entry.get("OS-EXT-IPS-MAC:mac_addr") or entry.get("mac_addr"),
+            ))
             if kind == "floating":
                 floating_ip = addr
             else:
@@ -523,6 +564,7 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
                 fixed_ip=fixed_ip,
                 floating_ip=floating_ip,
                 mac=mac,
+                ips=ips,
             )
         )
     return out
