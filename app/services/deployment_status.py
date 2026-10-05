@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from ipaddress import ip_address
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -31,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.models import User
 from app.services.openstack_client import user_connection
 from app.services.tf_state_parser import TfResource, parse_tf_state
+from app.utils.net import ip_version
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ class NetworkAddress:
     """All addresses on a network, plus legacy single-address fields."""
     network: str
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
     ips: list[IPAddress] = field(default_factory=list)
@@ -110,6 +111,7 @@ class NetworkPort:
     status: str | None
     mac: str | None
     fixed_ip: str | None
+    fixed_ip_v6: str | None = None
     security_group_ids: list[str] = field(default_factory=list)
     fixed_ips: list[PortIPAddress] = field(default_factory=list)
 
@@ -329,7 +331,7 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
                 continue
             addresses.append(PortIPAddress(
                 address=address,
-                version=_ip_version(address),
+                version=ip_version(address),
                 subnet_id=entry.get("subnet_id"),
             ))
         out.append(
@@ -339,6 +341,7 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
                 status=getattr(p, "status", None),
                 mac=getattr(p, "mac_address", None),
                 fixed_ip=addresses[0].address if addresses else None,
+                fixed_ip_v6=next((a.address for a in addresses if a.version == 6), None),
                 security_group_ids=list(getattr(p, "security_group_ids", None) or []),
                 fixed_ips=addresses,
             )
@@ -516,13 +519,6 @@ def _hardware_from(server: Any) -> HardwareSpec:
     )
 
 
-def _ip_version(address: str) -> Literal[4, 6] | None:
-    try:
-        return ip_address(address).version
-    except ValueError:
-        return None
-
-
 def _addresses_from(server: Any) -> list[NetworkAddress]:
     """Keep every address per network without changing legacy selection.
 
@@ -547,7 +543,7 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
             kind = entry.get("OS-EXT-IPS:type") or entry.get("type")
             ips.append(IPAddress(
                 address=addr,
-                version=_ip_version(addr),
+                version=ip_version(addr),
                 type=kind if isinstance(kind, str) else "fixed",
                 mac=entry.get("OS-EXT-IPS-MAC:mac_addr") or entry.get("mac_addr"),
             ))
@@ -562,6 +558,10 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
             NetworkAddress(
                 network=str(network_name),
                 fixed_ip=fixed_ip,
+                fixed_ip_v6=next(
+                    (ip.address for ip in ips if ip.version == 6 and ip.type != "floating"),
+                    None,
+                ),
                 floating_ip=floating_ip,
                 mac=mac,
                 ips=ips,

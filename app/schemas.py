@@ -359,6 +359,7 @@ class IPAddressSchema(BaseModel):
 class NetworkAddressSchema(BaseModel):
     network: str
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
     ips: list[IPAddressSchema] = Field(default_factory=list)
@@ -376,6 +377,7 @@ class NetworkPortSchema(BaseModel):
     status: str | None = None
     mac: str | None = None
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     security_group_ids: list[str] = []
     fixed_ips: list[PortIPAddressSchema] = Field(default_factory=list)
 
