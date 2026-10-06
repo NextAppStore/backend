@@ -60,11 +60,15 @@ class OpenStackAuthType(str, enum.Enum):
     PASSWORD = "password"
 
 
-class Topology(str, enum.Enum):
+class VmTopology(str, enum.Enum):
     SHARED = "shared"
-    PER_TEAM = "per team"
-    PER_USER = "per user"
+    PER_TEAM = "per_team"
+    PER_USER = "per_user"
     CUSTOM = "custom"
+
+
+# Backward-compatibility alias
+Topology = VmTopology
 
 
 # ----------------------------------------------------------------
@@ -153,7 +157,10 @@ class App(Base):
     git_link = Column(String, nullable=True)
     is_private = Column(Boolean, nullable=False, default=False)
     userId = Column(UUID(as_uuid=True), ForeignKey("users.userId"), nullable=False, index=True)
-    topology = Column(Enum(Topology), nullable=True)
+    vm_topology = Column(
+        Enum(VmTopology, values_callable=lambda x: [e.value for e in x], name="vmtopology"),
+        nullable=True,
+    )
     requirements = Column(Text, nullable=True)
     recommended_for = Column(Text, nullable=True)
 

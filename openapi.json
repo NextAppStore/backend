@@ -3592,6 +3592,38 @@
             "title": "Is Private",
             "default": false
           },
+          "vm_topology": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VmTopology"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requirements"
+          },
+          "recommended_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended For"
+          },
           "image": {
             "anyOf": [
               {
@@ -3646,6 +3678,38 @@
           "is_private": {
             "type": "boolean",
             "title": "Is Private"
+          },
+          "vm_topology": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VmTopology"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requirements"
+          },
+          "recommended_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended For"
           },
           "appId": {
             "type": "string",
@@ -3729,6 +3793,38 @@
               }
             ],
             "title": "Image"
+          },
+          "vm_topology": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VmTopology"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requirements"
+          },
+          "recommended_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended For"
           }
         },
         "type": "object",
@@ -4143,6 +4239,38 @@
           "is_private": {
             "type": "boolean",
             "title": "Is Private"
+          },
+          "vm_topology": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VmTopology"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requirements"
+          },
+          "recommended_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended For"
           },
           "appId": {
             "type": "string",
@@ -5000,6 +5128,50 @@
         "type": "object",
         "title": "HardwareSpecSchema"
       },
+      "IPAddressSchema": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  4,
+                  6
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "mac": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mac"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "type"
+        ],
+        "title": "IPAddressSchema"
+      },
       "LifecycleStatesSchema": {
         "properties": {
           "status": {
@@ -5125,6 +5297,13 @@
               }
             ],
             "title": "Mac"
+          },
+          "ips": {
+            "items": {
+              "$ref": "#/components/schemas/IPAddressSchema"
+            },
+            "type": "array",
+            "title": "Ips"
           }
         },
         "type": "object",
@@ -5190,6 +5369,13 @@
             "type": "array",
             "title": "Security Group Ids",
             "default": []
+          },
+          "fixed_ips": {
+            "items": {
+              "$ref": "#/components/schemas/PortIPAddressSchema"
+            },
+            "type": "array",
+            "title": "Fixed Ips"
           }
         },
         "type": "object",
@@ -5545,6 +5731,45 @@
         ],
         "title": "OpenStackCredentialUpsert",
         "description": "Body of PUT /me/openstack-credentials.\n\n`identifier` is either a username (password auth) or an\napplication-credential ID. `secret` is the corresponding password or\napplication-credential secret. Both are stored encrypted at rest."
+      },
+      "PortIPAddressSchema": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  4,
+                  6
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "subnet_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subnet Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address"
+        ],
+        "title": "PortIPAddressSchema"
       },
       "QuotaItem": {
         "properties": {
@@ -6299,6 +6524,16 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VmTopology": {
+        "type": "string",
+        "enum": [
+          "shared",
+          "per_team",
+          "per_user",
+          "custom"
+        ],
+        "title": "VmTopology"
       },
       "VolumeAttachmentSchema": {
         "properties": {
