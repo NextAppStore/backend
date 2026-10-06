@@ -4,7 +4,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from app.models import AppVersionApprovalStatus, OpenStackAuthType, TaskStatus, TaskType, UserRole
+from app.models import (
+    AppVersionApprovalStatus,
+    OpenStackAuthType,
+    TaskStatus,
+    TaskType,
+    UserRole,
+    VmTopology,
+)
 
 
 # ----------------------------------------------------------------
@@ -97,6 +104,9 @@ class AppBase(BaseModel):
     description: str | None = None
     git_link: str | None = None
     is_private: bool = False
+    vm_topology: VmTopology | None = None
+    requirements: str | None = None
+    recommended_for: str | None = None
 
 
 class AppCreate(AppBase):
@@ -119,6 +129,9 @@ class AppUpdate(BaseModel):
     # Same data-URL convention as ``AppCreate``. Pass ``""`` to clear
     # the image; ``None`` (the default) leaves it unchanged.
     image: str | None = None
+    vm_topology: VmTopology | None = None
+    requirements: str | None = None
+    recommended_for: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 

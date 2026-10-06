@@ -11,3 +11,10 @@
 # container UID to the host UID (build args, compose changes, macOS
 # vs Linux verification). Tracked in #59.
 AVD-DS-0002
+
+# CVE-2026-85394 (python-jose): Algorithm confusion vulnerability where
+# DER-encoded keys without PEM armor can be accepted during HMAC verification.
+# In our codebase, both Keycloak and LTI token verifications explicitly enforce
+# algorithms=["RS256"], preventing HMAC algorithm confusion. python-jose is
+# unmaintained upstream with no fix release available.
+CVE-2026-85394

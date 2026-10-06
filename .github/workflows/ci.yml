@@ -337,7 +337,14 @@ jobs:
           # attack surface is not present. Ignored here rather than left
           # to fail --strict indefinitely. Revisit if we ever sign with
           # ecdsa or migrate off python-jose (e.g. to PyJWT).
-          poetry run pip-audit --strict --ignore-vuln PYSEC-2026-1325
+          #
+          # CVE-2026-85394 (python-jose): Algorithm confusion vulnerability
+          # where DER-encoded keys without PEM armor can be accepted during
+          # HMAC verification. In our codebase, both Keycloak and LTI token
+          # verifications explicitly enforce algorithms=["RS256"], preventing
+          # HMAC algorithm confusion. python-jose is unmaintained and has no
+          # upstream release fixing this. Ignored until migration to PyJWT.
+          poetry run pip-audit --strict --ignore-vuln PYSEC-2026-1325 --ignore-vuln CVE-2026-85394
 
       # Trivy fs runs twice on purpose:
       #   1. blocking gate — fails the job on HIGH/CRITICAL
