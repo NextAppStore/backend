@@ -282,7 +282,7 @@ def get_deployment(
     - User and App relations
     - Teams with members
     - Latest task status
-    - Terraform outputs
+    - OpenTofu outputs
     - Optionally: full logs (use include_logs=true)
     """
     deployment = crud_deployments.get_deployment_with_details(db, deployment_id)
@@ -426,7 +426,7 @@ def _attach_files_to_user_input(
     field.
 
     Validation:
-      * each top-level key in ``files`` becomes one terraform variable
+      * each top-level key in ``files`` becomes one OpenTofu variable
       * each inner-map entry is one ``DeploymentFileUpload`` record
       * ``content_b64`` decodes cleanly (RFC 4648, padding optional)
       * decoded size matches the declared ``size`` (within rounding —
@@ -594,7 +594,7 @@ def _validate_scoped_user_input(
     Reasoning: the wizard packs scoped variables as a Map
     (``{slot_key: value, ...}``) and ships them via ``userInputVar``.
     A hand-crafted POST could ship arbitrary keys; we want unknown
-    Scope-Targets to fail fast and loud before they hit Terraform,
+    Scope-Targets to fail fast and loud before they hit OpenTofu,
     where the error would be a confusing "module: invalid for_each
     key" deep in the worker log.
 
@@ -655,7 +655,7 @@ def _validate_scoped_user_input(
         """Treat None, empty string, empty list, and empty dict as
         "slot not filled". The wizard would otherwise let a required
         team/user-scoped var slip through with one team left blank,
-        which Terraform would catch with a much less actionable
+        which OpenTofu would catch with a much less actionable
         ``Inappropriate value for attribute`` deep in the worker log.
         """
         if val is None:
@@ -732,7 +732,7 @@ def _validate_scoped_user_input(
             # user scoped variables every expected slot key must carry
             # a non-empty value. Without this an empty map (or one
             # team left blank) would silently pass here and only fail
-            # downstream with an opaque Terraform error.
+            # downstream with an opaque OpenTofu error.
             #
             # File vars are skipped from the completeness sweep — the
             # per-file size/decode validation in
@@ -833,7 +833,7 @@ def _looks_like_file_var(value) -> bool:
     triplet. Used at response-shaping time to identify file-typed
     variables without consulting the app's variable schema, AND at
     lifecycle-dispatch time (destroy/pause/resume/redeploy) to drop
-    file vars from the worker's var-set so Terraform's schema
+    file vars from the worker's var-set so OpenTofu's schema
     validation doesn't trip on a payload it doesn't need.
 
     Shape examples it matches (and only these):
@@ -988,7 +988,7 @@ def create_deployment(
     except Exception:
         user_vars = {}
 
-    # Format teams for Terraform (team_name: [user_emails])
+    # Format teams for OpenTofu (team_name: [user_emails])
     teams_dict = {}
     if deployment.teams:
         for team in deployment.teams:
@@ -1062,7 +1062,7 @@ def create_deployment(
 # the deployment's status:
 #
 #   * ``success`` / ``failed`` / ``paused`` → dispatch a Destroy task
-#     (terraform destroy + auto-soft-delete on success). ``paused`` is
+#     (tofu destroy + auto-soft-delete on success). ``paused`` is
 #     in the destroy set because SHUTOFF instances + volumes/networks
 #     are still OpenStack resources that need to be reclaimed.
 #     Returns 202 + task_id; the frontend keeps the live stream open
@@ -1274,7 +1274,7 @@ def _dispatch_lifecycle_task(
     # (destroy, pause, resume), strip any ``@openstack:file:*`` payloads
     # from the user-vars BEFORE they reach the worker. Files are only
     # consumed at apply-time by cloud-init's write_files; everything
-    # else just hands the same var-set to Terraform which then
+    # else just hands the same var-set to OpenTofu which then
     # validates the entire variable surface against the HCL schema.
     # A row whose ``content_b64`` was stripped by a response-side
     # ``_strip_file_vars_from_user_input`` pass (e.g. after a manual
@@ -1283,9 +1283,9 @@ def _dispatch_lifecycle_task(
     # ``element "all": attributes "content_b64", "content_type",
     # "name", and "size" are required`` because the surviving slot
     # violates the variable's object type. Dropping the var
-    # altogether lets Terraform fall back on the HCL default.
+    # altogether lets OpenTofu fall back on the HCL default.
     #
-    # REDEPLOY is the special case: ``terraform apply -replace`` destroys
+    # REDEPLOY is the special case: ``tofu apply -replace`` destroys
     # and recreates the VM, so cloud-init runs fresh and MUST receive the
     # original ``write_files`` payload — otherwise the replaced VM ends
     # up empty even though the user/group/password config is preserved.
@@ -1366,7 +1366,7 @@ def _dispatch_lifecycle_task(
 #       Frontend loads this lazily when the user opens a card's drawer.
 #
 #   * POST /{deployment_id}/resources/{address}/redeploy
-#       Per-VM redeploy — issues ``terraform apply -replace=<addr>
+#       Per-VM redeploy — issues ``tofu apply -replace=<addr>
 #       -target=<addr>`` in a dedicated Celery task. Strictly
 #       address-whitelisted against the cached TF state and the
 #       compute-instance category, so a hand-crafted POST can't smuggle
@@ -1377,8 +1377,8 @@ def _dispatch_lifecycle_task(
 # able to access through the deployment detail page.
 
 
-# We accept the same Terraform address vocabulary the user would type
-# on ``terraform apply -target=``: ``type.name`` with optional
+# We accept the same OpenTofu address vocabulary the user would type
+# on ``tofu apply -target=``: ``type.name`` with optional
 # ``[<int>]`` or ``["<string>"]`` suffix. Multiple address segments
 # (modules, nested resources) aren't supported by the current apps,
 # so we keep the regex strict to make smuggling impossible. The
@@ -1398,8 +1398,8 @@ _TF_ADDRESS_RE = re.compile(
 
 
 def _latest_tf_state_for(deployment_id: UUID, db: Session) -> str | None:
-    """Return the JSON blob of the most recent task that captured a
-    Terraform state for this deployment, or None when no apply ever
+    """Return the JSON blob of the most recent task that captured an
+    OpenTofu state for this deployment, or None when no apply ever
     succeeded yet.
 
     Note: we deliberately do NOT filter by ``task.type`` — the worker
@@ -1521,7 +1521,7 @@ def redeploy_deployment_resource(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
-    """Replace one compute instance via ``terraform apply -replace=…``.
+    """Replace one compute instance via ``tofu apply -replace=…``.
 
     Address-whitelisted: we re-parse the cached TF state and only
     accept addresses that resolve to a compute instance. Anything else
@@ -1600,7 +1600,7 @@ def _view_asdict(view) -> dict:
 
 #
 # Halts the OpenStack compute instances of a deployment without
-# tearing them down. The worker task pulls the terraform state, lists
+# tearing them down. The worker task pulls the OpenTofu state, lists
 # every ``openstack_compute_instance_v2`` resource, and runs
 # ``openstack server stop`` against each. Volumes and networks stay,
 # so RESUME restores the same instances byte-for-byte.
@@ -1801,7 +1801,7 @@ def get_my_access(
 ):
     """Return the calling member's OWN access credentials for a deployment.
 
-    The full terraform ``outputs`` are owner-view-only (they carry every
+    The full OpenTofu ``outputs`` are owner-view-only (they carry every
     teammate's credentials in one object). This endpoint is the member
     counterpart: a team member — typically a student — retrieves only
     THEIR OWN account, extracted server-side from the latest successful
@@ -2011,7 +2011,7 @@ async def stream_deployment_events(
     if not deployment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
     # Inspect-only view via capabilities. The live stream surfaces
-    # task-log lines (raw worker stdout incl. terraform output, packer
+    # task-log lines (raw worker stdout incl. OpenTofu output, packer
     # build chatter, etc.); course-teachers of the deployment-owner's
     # course are in the inspect set, owners and admins keep their access,
     # and plain members still see metadata only.

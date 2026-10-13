@@ -25,6 +25,7 @@ class GitService:
     # both the flat layout (``packer/variables.pkr.hcl``) and per-template
     # layout (``packer/<key>/variables.pkr.hcl``) plus the
     # ``template.pkr.hcl`` files are fetched. ``terraform/variables.tf``
+    # (the app-template directory name; OpenTofu reads the same HCL)
     # is a single file since only the variables file is needed.
     SPARSE_CHECKOUT_FILES = [
         'terraform/variables.tf',

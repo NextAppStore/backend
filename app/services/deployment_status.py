@@ -1,6 +1,6 @@
 """Live-status joiner for the deployment Infrastructure tab.
 
-Marries the cached Terraform state (parsed by ``tf_state_parser``)
+Marries the cached OpenTofu state (parsed by ``tf_state_parser``)
 with live OpenStack data via the per-user ``Connection`` helper from
 ``openstack_client``. Two stages, one per endpoint:
 
@@ -14,7 +14,7 @@ with live OpenStack data via the per-user ``Connection`` helper from
 
 A single live-fetch failure must not fail the whole endpoint: each VM
 degrades independently to ``drift=missing`` (fetch returned nothing) or
-``drift=stale`` (fetch raised), and TF-cached attributes survive so the
+``drift=stale`` (fetch raised), and OpenTofu-cached attributes survive so the
 UI can still render something.
 """
 

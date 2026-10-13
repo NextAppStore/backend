@@ -182,7 +182,8 @@ _OS_TYPES: set[str] = {
     # ``file`` is a special pseudo-resource: it doesn't pick from a
     # remote OpenStack API, it tells the wizard to render a file-upload
     # widget and route the bytes into ``userInputVar.terraform`` so the
-    # template can drop them onto the VM via cloud-init ``write_files``.
+    # template can drop them onto the VM via cloud-init ``write_files``
+    # (OpenTofu passes the value through unchanged).
     # The mode slot carries the scope (``all``/``team``/``user``); the
     # multi slot carries the mandatory extension filter (e.g. ``pdf`` or
     # ``pdf|docx``) — a file marker without a filter is rejected.
@@ -488,7 +489,7 @@ def _parse_file_marker(
             var_name,
             "``@openstack:file`` ist in Packer-Variablen nicht "
             "unterstützt — Dateien werden ausschließlich im "
-            "Terraform-Pfad zugestellt",
+            "OpenTofu-Pfad zugestellt",
             code="MARKER_FILE_PACKER_FORBIDDEN",
         )
 
@@ -871,15 +872,15 @@ def _validate_scoped_var_shape(var_name: str, var_type: str, scope: str) -> None
     has a map-typed HCL declaration.
 
     Reasoning: bei ``team``/``user``-Scope schickt der Wizard eine Map
-    (slot_key → value) an Terraform/Packer. Wenn der HCL-Type ein
-    Skalar ist (``string``, ``number``, ...), würde Terraform die Map
+    (slot_key → value) an OpenTofu/Packer. Wenn der HCL-Type ein
+    Skalar ist (``string``, ``number``, ...), würde OpenTofu die Map
     beim Apply ablehnen. Wir fangen das hier ab, damit der App-Autor
     den Fehler bei ``GET /apps/{id}/variables`` sieht und nicht erst
     beim ersten Deploy.
 
     Bei ``scope = all`` (oder fehlendem Scope) gilt das nicht — dann
     rendert der Wizard genau EIN Eingabefeld, das wie heute direkt
-    als Skalar oder Liste an Terraform durchgereicht wird.
+    als Skalar oder Liste an OpenTofu durchgereicht wird.
     """
     if scope not in ("team", "user"):
         return
@@ -900,7 +901,7 @@ def _coerce_hcl_default(raw_default: str, var_type: str) -> tuple[Any, bool]:
     """Coerce an HCL default literal into its Python equivalent so the
     frontend sees ``default = 2`` as ``2`` (number) rather than ``"2"``
     (string). Returns ``(value, required)`` — an HCL ``null`` default
-    yields ``None`` AND ``required = True`` (Terraform treats null as "no
+    yields ``None`` AND ``required = True`` (OpenTofu treats null as "no
     default").
 
     Robust against minor whitespace and trailing commas; any parse error
@@ -1036,7 +1037,7 @@ def _parse_one_variable(
         # File variables have a hard contract with cloud-init: the wizard
         # must know whether to render a single slot (scope=all), a map
         # over teams, or a map over users. The HCL type nesting must match
-        # the scope or Terraform rejects the decode at apply — we catch it
+        # the scope or OpenTofu rejects the decode at apply — we catch it
         # here and give the author a clear error.
         if os_type == "file":
             _validate_file_var_shape(var_name, var_type, file_scope or "all")
@@ -1121,7 +1122,7 @@ def _iter_variable_blocks(content: str):
 
 
 def _parse_terraform_variables(file_path: str) -> list[dict[str, Any]]:
-    """Parse Terraform `variables.tf` file. Per-variable marker errors
+    """Parse OpenTofu `variables.tf` file. Per-variable marker errors
     travel in the ``markerError`` field (not raised) — see
     ``_parse_one_variable``."""
     with open(file_path) as f:
@@ -1196,13 +1197,13 @@ def _parse_packer_variables(file_path: str, template_key: str = "default") -> li
 #         packer/template.pkr.hcl
 #         packer/variables.pkr.hcl
 #     → exactly ONE image, conventionally keyed ``default``. The
-#       worker injects ``image_name`` (a single Terraform variable).
+#       worker injects ``image_name`` (a single OpenTofu variable).
 #
 #  2. Multi-template layout:
 #         packer/<key>/template.pkr.hcl
 #         packer/<key>/variables.pkr.hcl   (optional)
 #     → one image per ``<key>``. The worker injects one
-#       ``image_name_<key>`` Terraform variable per template, each
+#       ``image_name_<key>`` OpenTofu variable per template, each
 #       marked ``@platform:internal`` in its description so the wizard
 #       skips them.
 #
@@ -1218,7 +1219,7 @@ def _parse_packer_variables(file_path: str, template_key: str = "default") -> li
 #     doesn't match the pattern → ``PackerTemplateDiscoveryError``.
 #
 # Key pattern is intentionally narrow (``[a-z][a-z0-9_-]{0,30}``) so
-# the key is safe to embed in Terraform variable names and image
+# the key is safe to embed in OpenTofu variable names and image
 # tags without quoting.
 # ----------------------------------------------------------------
 
@@ -1255,7 +1256,7 @@ def _discover_packer_templates(repo_path: str) -> list[_PackerTemplate]:
     worker will build for this app.
 
     See the section docstring above for the layout rules. Returns
-    ``[]`` for apps without any Packer at all (Terraform-only).
+    ``[]`` for apps without any Packer at all (OpenTofu-only).
     """
     packer_dir = os.path.join(repo_path, "packer")
     if not os.path.isdir(packer_dir):
@@ -1401,7 +1402,7 @@ def get_app(
 # GET APP VARIABLES
 # ----------------------------------------------------------------
 def load_variable_definitions(app, version: str) -> list[dict[str, Any]]:
-    """Clone the app's release-vars and parse all Terraform/Packer
+    """Clone the app's release-vars and parse all OpenTofu/Packer
     variables into the same shape ``GET /apps/{id}/variables`` returns.
 
     Reusable from ``POST /deployments`` so the deployment endpoint can

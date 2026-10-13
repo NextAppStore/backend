@@ -198,10 +198,10 @@ class DeploymentFileUpload(BaseModel):
 
     Persisted verbatim into ``userInputVar.terraform`` keyed by the
     variable name (and recipient key for team/user scope) so the worker
-    passes it to terraform and cloud-init decodes it into ``write_files``.
+    passes it to OpenTofu and cloud-init decodes it into ``write_files``.
 
     ``content_b64`` MUST be standard (RFC 4648) base64. The value sent
-    to Terraform stays base64 for cloud-init's ``encoding: b64``.
+    to OpenTofu stays base64 for cloud-init's ``encoding: b64``.
     """
     name: str
     content_b64: str
@@ -218,7 +218,7 @@ class DeploymentCreate(DeploymentBase):
     #   * scope = team → one entry per team name
     #   * scope = user → one entry per ``Team-User`` composite key
     # The backend doesn't auto-route — what the wizard puts in here
-    # ends up 1:1 in the Terraform variable.
+    # ends up 1:1 in the OpenTofu variable.
     files: dict[str, dict[str, DeploymentFileUpload]] | None = None
     teams: list[Team] = []
 
@@ -274,9 +274,9 @@ class TaskSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Terraform outputs parsed
+# OpenTofu outputs parsed
 class DeploymentOutputs(BaseModel):
-    """Parsed Terraform outputs - structure depends on app"""
+    """Parsed OpenTofu outputs - structure depends on app"""
     raw: dict[str, Any] | None = None  # Full outputs as dict
 
     model_config = ConfigDict(from_attributes=True)
@@ -290,7 +290,7 @@ class MyAccessResponse(BaseModel):
     can see their OWN credentials without the owner-view that gates the
     full outputs. Only the caller's own account is ever present.
 
-    Both maps mirror the raw terraform ``user_accounts`` / ``team_vms``
+    Both maps mirror the raw OpenTofu ``user_accounts`` / ``team_vms``
     output shape (one key each: the member's account and their team's VM)
     so the frontend's existing account-matching pipeline consumes this
     unchanged. Empty maps mean "no credentials yet" (no successful deploy,
