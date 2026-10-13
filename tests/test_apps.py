@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.crud import apps as crud_apps
 from app.database import get_db
 from app.main import app as fastapi_app
-from app.models import User, UserRole
+from app.models import User, UserRole, VmTopology
 from app.schemas import AppCreate
 from app.utils.permissions import get_current_user as get_current_user_keycloak
 from tests.conftest import TestingSessionLocal
@@ -86,6 +86,93 @@ def test_update_app_ignores_git_link(client, existing_app, db):
     refreshed = crud_apps.get_app(db, existing_app.appId)
     assert refreshed.git_link == ORIGINAL_GIT_LINK
     assert refreshed.name == "Renamed"
+
+
+@pytest.mark.integration
+def test_create_app_with_extended_metadata(client, mock_user, db):
+    response = client.post(
+        "/apps/",
+        json={
+            "name": "Metadata App",
+            "description": "App with topology & requirements",
+            "is_private": True,
+            "vm_topology": "per_team",
+            "requirements": "Recommended: flavor with at least 4 GB RAM",
+            "recommended_for": "Computer science practical exercises",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Metadata App"
+    assert body["vm_topology"] == "per_team"
+    assert body["requirements"] == "Recommended: flavor with at least 4 GB RAM"
+    assert body["recommended_for"] == "Computer science practical exercises"
+
+    db.expire_all()
+    app_db = crud_apps.get_app(db, uuid.UUID(body["appId"]))
+    assert app_db.vm_topology == VmTopology.PER_TEAM
+    assert app_db.requirements == "Recommended: flavor with at least 4 GB RAM"
+    assert app_db.recommended_for == "Computer science practical exercises"
+
+
+@pytest.mark.integration
+def test_create_app_without_metadata_defaults_to_none(client, mock_user, db):
+    response = client.post(
+        "/apps/",
+        json={
+            "name": "Legacy App",
+            "is_private": True,
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["vm_topology"] is None
+    assert body["requirements"] is None
+    assert body["recommended_for"] is None
+
+    db.expire_all()
+    app_db = crud_apps.get_app(db, uuid.UUID(body["appId"]))
+    assert app_db.vm_topology is None
+    assert app_db.requirements is None
+    assert app_db.recommended_for is None
+
+
+@pytest.mark.integration
+def test_update_app_metadata(client, existing_app, db):
+    response = client.put(
+        f"/apps/{existing_app.appId}",
+        json={
+            "vm_topology": "shared",
+            "requirements": "Minimum 2 CPU cores",
+            "recommended_for": "Lecture demonstrations",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vm_topology"] == "shared"
+    assert body["requirements"] == "Minimum 2 CPU cores"
+    assert body["recommended_for"] == "Lecture demonstrations"
+
+    db.expire_all()
+    refreshed = crud_apps.get_app(db, existing_app.appId)
+    assert refreshed.vm_topology == VmTopology.SHARED
+    assert refreshed.requirements == "Minimum 2 CPU cores"
+    assert refreshed.recommended_for == "Lecture demonstrations"
+
+
+@pytest.mark.integration
+def test_get_app_detail_returns_metadata(client, existing_app, db):
+    existing_app.vm_topology = VmTopology.CUSTOM
+    existing_app.requirements = "Custom flavor"
+    existing_app.recommended_for = "Special projects"
+    db.commit()
+
+    response = client.get(f"/apps/{existing_app.appId}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vm_topology"] == "custom"
+    assert body["requirements"] == "Custom flavor"
+    assert body["recommended_for"] == "Special projects"
 
 
 @pytest.mark.integration

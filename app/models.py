@@ -60,6 +60,17 @@ class OpenStackAuthType(str, enum.Enum):
     PASSWORD = "password"
 
 
+class VmTopology(str, enum.Enum):
+    SHARED = "shared"
+    PER_TEAM = "per_team"
+    PER_USER = "per_user"
+    CUSTOM = "custom"
+
+
+# Backward-compatibility alias
+Topology = VmTopology
+
+
 # ----------------------------------------------------------------
 # COURSE MODEL
 # ----------------------------------------------------------------
@@ -107,9 +118,7 @@ class User(Base):
     courseId = Column(UUID(as_uuid=True), ForeignKey("courses.courseId"), nullable=True, index=True)
     created_at = Column(DateTime, default=utcnow)
 
-    __table_args__ = (
-        UniqueConstraint("lti_iss", "lti_sub", name="uq_users_lti_identity"),
-    )
+    __table_args__ = (UniqueConstraint("lti_iss", "lti_sub", name="uq_users_lti_identity"),)
 
     # Relationships
     course = relationship("Course", back_populates="users")
@@ -142,10 +151,19 @@ class App(Base):
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     image = Column(LargeBinary, nullable=True)  # raw bytes of the uploaded logo
-    image_mime = Column(String(64), nullable=True)  # e.g. "image/png" — needed to build a data-URL on read
+    image_mime = Column(
+        String(64), nullable=True
+    )  # e.g. "image/png" — needed to build a data-URL on read
     git_link = Column(String, nullable=True)
     is_private = Column(Boolean, nullable=False, default=False)
     userId = Column(UUID(as_uuid=True), ForeignKey("users.userId"), nullable=False, index=True)
+    vm_topology = Column(
+        Enum(VmTopology, values_callable=lambda x: [e.value for e in x], name="vmtopology"),
+        nullable=True,
+    )
+    requirements = Column(Text, nullable=True)
+    recommended_for = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=utcnow)
     # Soft-delete marker. When set, the app is hidden from default
     # queries but the row stays so existing deployments keep their FK
@@ -387,9 +405,7 @@ class AppVersionApproval(Base):
     reviewed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("appId", "version_tag", name="uq_app_version_approval"),
-    )
+    __table_args__ = (UniqueConstraint("appId", "version_tag", name="uq_app_version_approval"),)
 
     # Relationships
     app = relationship("App", back_populates="version_approvals")

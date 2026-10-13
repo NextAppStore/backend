@@ -51,6 +51,9 @@ setuptools = ">=83.0.0"
 # Transitive via starlette/httpx. Pinned to >=4.14.2 to close CVE-2026-63374
 # and CVE-2026-64847. Fixed in 4.14.2.
 anyio = ">=4.14.2"
+# Transitive via requests. Pinned to >=2.8.0 to close PYSEC-2026-4175,
+# PYSEC-2026-4176, and PYSEC-2026-4177. Fixed in 2.8.0.
+urllib3 = ">=2.8.0"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -73,6 +76,9 @@ httpx = ">=0.26.0"
 ruff = ">=0.1.13"
 mypy = ">=1.8.0"
 pre-commit = ">=3.6.0"
+# Transitive via pre-commit. Pinned to >=21.7.13 to close PYSEC-2026-4011,
+# PYSEC-2026-4012, PYSEC-2026-4013, and PYSEC-2026-4014. Fixed in 21.7.13.
+virtualenv = ">=21.7.13"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

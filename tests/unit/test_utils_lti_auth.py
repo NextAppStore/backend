@@ -39,6 +39,18 @@ TEST_CLIENT_ID = "client-123"
 
 
 # ----------------------------------------------------------------
+# schema setup for tests that use db
+# ----------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _ensure_tables_exist(request):
+    if "db" in request.fixturenames:
+        db = request.getfixturevalue("db")
+        from app.models import Base
+
+        Base.metadata.create_all(bind=db.get_bind())
+
+
+# ----------------------------------------------------------------
 # role mapping
 # ----------------------------------------------------------------
 @pytest.mark.unit
