@@ -90,6 +90,7 @@ class NetworkAddress:
     """All addresses on a network, plus legacy single-address fields."""
     network: str
     fixed_ip: str | None = None
+    fixed_ip_v6: str | None = None
     floating_ip: str | None = None
     mac: str | None = None
     ips: list[IPAddress] = field(default_factory=list)
@@ -110,6 +111,7 @@ class NetworkPort:
     status: str | None
     mac: str | None
     fixed_ip: str | None
+    fixed_ip_v6: str | None = None
     security_group_ids: list[str] = field(default_factory=list)
     fixed_ips: list[PortIPAddress] = field(default_factory=list)
 
@@ -339,6 +341,7 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
                 status=getattr(p, "status", None),
                 mac=getattr(p, "mac_address", None),
                 fixed_ip=addresses[0].address if addresses else None,
+                fixed_ip_v6=next((a.address for a in addresses if a.version == 6), None),
                 security_group_ids=list(getattr(p, "security_group_ids", None) or []),
                 fixed_ips=addresses,
             )
@@ -562,6 +565,10 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
             NetworkAddress(
                 network=str(network_name),
                 fixed_ip=fixed_ip,
+                fixed_ip_v6=next(
+                    (ip.address for ip in ips if ip.version == 6 and ip.type != "floating"),
+                    None,
+                ),
                 floating_ip=floating_ip,
                 mac=mac,
                 ips=ips,

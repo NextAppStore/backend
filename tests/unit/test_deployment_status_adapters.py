@@ -483,6 +483,26 @@ def test_addresses_preserve_every_family_and_type(addresses, reverse):
 
 
 @pytest.mark.unit
+def test_addresses_from_dual_stack_exposes_fixed_ip_v6():
+    server = SimpleNamespace(addresses={"net": [
+        {"addr": "192.0.2.10", "OS-EXT-IPS:type": "fixed"},
+        {"addr": "2001:db8::10", "OS-EXT-IPS:type": "fixed"},
+    ]})
+    row = _addresses_from(server)[0]
+    assert row.fixed_ip == "192.0.2.10"
+    assert row.fixed_ip_v6 == "2001:db8::10"
+
+
+@pytest.mark.unit
+def test_addresses_from_v4_only_leaves_fixed_ip_v6_none():
+    server = SimpleNamespace(addresses={"net": [
+        {"addr": "192.0.2.10", "OS-EXT-IPS:type": "fixed"},
+    ]})
+    row = _addresses_from(server)[0]
+    assert row.fixed_ip_v6 is None
+
+
+@pytest.mark.unit
 def test_addresses_without_metadata_infer_family_and_keep_unknown_address():
     server = SimpleNamespace(addresses={"net": [
         {}, {"addr": None}, {"addr": ""}, {"addr": 42},
@@ -510,6 +530,18 @@ def test_ports_preserve_all_addresses_and_subnets(addresses):
     row = _fetch_ports(conn, "vm")[0]
     assert [(ip.address, ip.version, ip.subnet_id) for ip in row.fixed_ips] == addresses
     assert row.fixed_ip == (addresses[0][0] if addresses else None)
+
+
+@pytest.mark.unit
+def test_ports_dual_stack_exposes_fixed_ip_v6():
+    port = SimpleNamespace(id="port", fixed_ips=[
+        {"ip_address": "192.0.2.10", "subnet_id": "v4"},
+        {"ip_address": "2001:db8::10", "subnet_id": "v6"},
+    ])
+    conn = SimpleNamespace(network=SimpleNamespace(ports=lambda **_kw: [port]))
+    row = _fetch_ports(conn, "vm")[0]
+    assert row.fixed_ip == "192.0.2.10"
+    assert row.fixed_ip_v6 == "2001:db8::10"
 
 
 @pytest.mark.unit
