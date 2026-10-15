@@ -5274,7 +5274,20 @@
                 "type": "null"
               }
             ],
-            "title": "Fixed Ip"
+            "title": "Fixed Ip",
+            "description": "First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4."
+          },
+          "fixed_ip_v6": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Ip V6",
+            "description": "First fixed IPv6 address, or null on IPv4-only networks."
           },
           "floating_ip": {
             "anyOf": [
@@ -5360,7 +5373,20 @@
                 "type": "null"
               }
             ],
-            "title": "Fixed Ip"
+            "title": "Fixed Ip",
+            "description": "First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4."
+          },
+          "fixed_ip_v6": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Ip V6",
+            "description": "First fixed IPv6 address, or null on IPv4-only networks."
           },
           "security_group_ids": {
             "items": {

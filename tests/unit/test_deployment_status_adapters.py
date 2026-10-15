@@ -502,6 +502,62 @@ def test_addresses_from_v4_only_leaves_fixed_ip_v6_none():
     assert row.fixed_ip_v6 is None
 
 
+# (entries, expected fixed_ip, expected fixed_ip_v6)
+_V4, _V4B, _V6, _V6B = "192.0.2.10", "192.0.2.11", "2001:db8::10", "2001:db8::11"
+_FAMILY_CASES = [
+    pytest.param([_V4, _V6], _V4, _V6, id="v4-first"),
+    pytest.param([_V6, _V4], _V4, _V6, id="v6-first"),
+    pytest.param([_V6, _V6B, _V4], _V4, _V6, id="v6-v6-v4-keeps-first-of-each"),
+    pytest.param([_V4, _V4B, _V6], _V4, _V6, id="two-v4"),
+    pytest.param([_V4], _V4, None, id="v4-only"),
+    pytest.param([_V6], _V6, _V6, id="v6-only-keeps-legacy-fallback"),
+    pytest.param([], None, None, id="empty"),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fixed, want_v4, want_v6", _FAMILY_CASES)
+def test_addresses_pick_fixed_ip_by_family_not_position(fixed, want_v4, want_v6):
+    server = SimpleNamespace(addresses={"net": [
+        {"addr": a, "OS-EXT-IPS:type": "fixed"} for a in fixed
+    ]})
+    out = _addresses_from(server)
+    if not fixed:
+        assert out == [] or (out[0].fixed_ip, out[0].fixed_ip_v6) == (None, None)
+        return
+    assert (out[0].fixed_ip, out[0].fixed_ip_v6) == (want_v4, want_v6)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fixed, want_v4, want_v6", _FAMILY_CASES)
+def test_ports_pick_fixed_ip_by_family_not_position(fixed, want_v4, want_v6):
+    port = SimpleNamespace(id="port", fixed_ips=[
+        {"ip_address": a, "subnet_id": "s"} for a in fixed
+    ])
+    conn = SimpleNamespace(network=SimpleNamespace(ports=lambda **_kw: [port]))
+    row = _fetch_ports(conn, "vm")[0]
+    assert (row.fixed_ip, row.fixed_ip_v6) == (want_v4, want_v6)
+
+
+@pytest.mark.unit
+def test_addresses_floating_ipv6_is_never_a_fixed_address():
+    server = SimpleNamespace(addresses={"net": [
+        {"addr": _V6, "OS-EXT-IPS:type": "floating"},
+        {"addr": _V4, "OS-EXT-IPS:type": "fixed"},
+    ]})
+    row = _addresses_from(server)[0]
+    assert (row.fixed_ip, row.fixed_ip_v6) == (_V4, None)
+
+
+@pytest.mark.unit
+def test_addresses_mac_comes_from_first_fixed_entry():
+    server = SimpleNamespace(addresses={"net": [
+        {"addr": _V6, "OS-EXT-IPS:type": "fixed", "OS-EXT-IPS-MAC:mac_addr": "aa:aa"},
+        {"addr": _V4, "OS-EXT-IPS:type": "fixed", "OS-EXT-IPS-MAC:mac_addr": "bb:bb"},
+    ]})
+    assert _addresses_from(server)[0].mac == "aa:aa"
+
+
 @pytest.mark.unit
 def test_addresses_without_metadata_infer_family_and_keep_unknown_address():
     server = SimpleNamespace(addresses={"net": [
@@ -529,7 +585,8 @@ def test_ports_preserve_all_addresses_and_subnets(addresses):
     conn = SimpleNamespace(network=SimpleNamespace(ports=lambda **_kw: [port]))
     row = _fetch_ports(conn, "vm")[0]
     assert [(ip.address, ip.version, ip.subnet_id) for ip in row.fixed_ips] == addresses
-    assert row.fixed_ip == (addresses[0][0] if addresses else None)
+    v4 = next((a for a, version, _ in addresses if version == 4), None)
+    assert row.fixed_ip == (v4 or (addresses[0][0] if addresses else None))
 
 
 @pytest.mark.unit

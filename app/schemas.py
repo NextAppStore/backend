@@ -371,8 +371,14 @@ class IPAddressSchema(BaseModel):
 
 class NetworkAddressSchema(BaseModel):
     network: str
-    fixed_ip: str | None = None
-    fixed_ip_v6: str | None = None
+    fixed_ip: str | None = Field(
+        default=None,
+        description="First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4.",
+    )
+    fixed_ip_v6: str | None = Field(
+        default=None,
+        description="First fixed IPv6 address, or null on IPv4-only networks.",
+    )
     floating_ip: str | None = None
     mac: str | None = None
     ips: list[IPAddressSchema] = Field(default_factory=list)
@@ -389,8 +395,14 @@ class NetworkPortSchema(BaseModel):
     network_id: str | None = None
     status: str | None = None
     mac: str | None = None
-    fixed_ip: str | None = None
-    fixed_ip_v6: str | None = None
+    fixed_ip: str | None = Field(
+        default=None,
+        description="First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4.",
+    )
+    fixed_ip_v6: str | None = Field(
+        default=None,
+        description="First fixed IPv6 address, or null on IPv4-only networks.",
+    )
     security_group_ids: list[str] = []
     fixed_ips: list[PortIPAddressSchema] = Field(default_factory=list)
 

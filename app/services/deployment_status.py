@@ -21,6 +21,7 @@ UI can still render something.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -334,14 +335,15 @@ def _fetch_ports(conn: Any, server_id: str) -> list[NetworkPort]:
                 version=_ip_version(address),
                 subnet_id=entry.get("subnet_id"),
             ))
+        fixed_ip, fixed_ip_v6 = _primary_fixed_addresses(addresses)
         out.append(
             NetworkPort(
                 port_id=str(getattr(p, "id", None) or ""),
                 network_id=getattr(p, "network_id", None),
                 status=getattr(p, "status", None),
                 mac=getattr(p, "mac_address", None),
-                fixed_ip=addresses[0].address if addresses else None,
-                fixed_ip_v6=next((a.address for a in addresses if a.version == 6), None),
+                fixed_ip=fixed_ip,
+                fixed_ip_v6=fixed_ip_v6,
                 security_group_ids=list(getattr(p, "security_group_ids", None) or []),
                 fixed_ips=addresses,
             )
@@ -526,11 +528,31 @@ def _ip_version(address: str) -> Literal[4, 6] | None:
         return None
 
 
-def _addresses_from(server: Any) -> list[NetworkAddress]:
-    """Keep every address per network without changing legacy selection.
+def _primary_fixed_addresses(
+    addresses: Sequence[IPAddress | PortIPAddress],
+) -> tuple[str | None, str | None]:
+    """Pick the ``(fixed_ip, fixed_ip_v6)`` pair from fixed addresses.
 
-    ``fixed_ip`` remains the first fixed address and ``floating_ip`` the
-    last floating address. Clients needing all families use ``ips``.
+    Nova and Neutron do not guarantee the order of a dual-stack network's
+    addresses, so the choice is by family, never by position:
+
+    * ``fixed_ip`` is the first IPv4 address. A network without any IPv4
+      address keeps the legacy behaviour (the first address, whatever its
+      family) so v6-only networks still show something.
+    * ``fixed_ip_v6`` is the first IPv6 address, or ``None``.
+    """
+    v4 = next((a.address for a in addresses if a.version == 4), None)
+    v6 = next((a.address for a in addresses if a.version == 6), None)
+    return v4 or (addresses[0].address if addresses else None), v6
+
+
+def _addresses_from(server: Any) -> list[NetworkAddress]:
+    """Keep every address per network.
+
+    ``fixed_ip`` is the first fixed IPv4 address, ``fixed_ip_v6`` the first
+    fixed IPv6 address (see :func:`_primary_fixed_addresses`) and
+    ``floating_ip`` the last floating address. Clients needing all
+    addresses use ``ips``.
     """
     raw = getattr(server, "addresses", None) or {}
     if not isinstance(raw, dict):
@@ -539,7 +561,8 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
     for network_name, entries in raw.items():
         if not isinstance(entries, list):
             continue
-        fixed_ip = floating_ip = mac = None
+        floating_ip = mac = None
+        seen_fixed = False
         ips = []
         for entry in entries:
             if not isinstance(entry, dict):
@@ -558,17 +581,17 @@ def _addresses_from(server: Any) -> list[NetworkAddress]:
                 floating_ip = addr
             else:
                 # Some clouds omit ``OS-EXT-IPS:type``; assume fixed.
-                if fixed_ip is None:
-                    fixed_ip = addr
+                if not seen_fixed:
+                    seen_fixed = True
                     mac = entry.get("OS-EXT-IPS-MAC:mac_addr") or entry.get("mac_addr")
+        fixed_ip, fixed_ip_v6 = _primary_fixed_addresses(
+            [ip for ip in ips if ip.type != "floating"]
+        )
         out.append(
             NetworkAddress(
                 network=str(network_name),
                 fixed_ip=fixed_ip,
-                fixed_ip_v6=next(
-                    (ip.address for ip in ips if ip.version == 6 and ip.type != "floating"),
-                    None,
-                ),
+                fixed_ip_v6=fixed_ip_v6,
                 floating_ip=floating_ip,
                 mac=mac,
                 ips=ips,
