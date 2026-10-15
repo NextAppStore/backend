@@ -426,7 +426,7 @@ def _handle_task_failed(celery_task_id: str, event: dict) -> tuple[dict, str | N
     try:
         failure_data = _parse_structured_failure(exception_type, traceback)
         if failure_data is not None:
-            # Structured worker-side failure (terraform apply, packer
+            # Structured worker-side failure (tofu apply, packer
             # build, etc.).
             failure_kind = "worker_failure"
             _apply_structured_failure(update_data, failure_data)

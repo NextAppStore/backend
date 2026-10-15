@@ -71,7 +71,7 @@ Execute all verification inside the sandbox container (run from `backend/` or ad
 ## 5. Asynchrone Entkopplung (Non-Blocking FastAPI)
 
 - **Keine synchronen Cloud-Operationen in HTTP-Endpunkten:**
-  - FastAPI-Endpunkte dürfen niemals langwierige oder potenziell blockierende Cloud-Aktionen (wie Terraform `apply`/`destroy`, Packer-Builds oder direkte synchrone OpenStack-Provisionierungen) direkt im Request-Thread ausführen.
+  - FastAPI-Endpunkte dürfen niemals langwierige oder potenziell blockierende Cloud-Aktionen (wie OpenTofu `apply`/`destroy`, Packer-Builds oder direkte synchrone OpenStack-Provisionierungen) direkt im Request-Thread ausführen.
   - Synchrone Aufrufe gefährden die Stabilität, führen zu HTTP-Timeouts und blockieren den ASGI-Worker.
 - **Typisierte Celery-Tasks via RabbitMQ:**
   - Sämtliche Cloud- und Infrastrukturjobs müssen als typisierte Celery-Tasks an den RabbitMQ-Broker übergeben werden (`app.services.task_service.dispatch_to_celery` bzw. `celery_app.send_task(...)`).

@@ -7,7 +7,7 @@ Two flavours:
 * ``send_owner_mail(...)`` — one mail to the deployment owner with
   every team's VM data and every user's credentials in one place.
 
-Both consume the worker's terraform outputs (``team_vms``,
+Both consume the worker's OpenTofu outputs (``team_vms``,
 ``user_accounts``, ``teams_summary``) plus the deployment's team/user
 membership from the DB. The output shape is documented inline below
 so a future template change doesn't have to re-discover it from a
@@ -62,7 +62,7 @@ def _display_name(user: User) -> str:
 # ----------------------------------------------------------------------------
 #
 # Worker tasks return ``terraform_outputs`` as the raw JSON object
-# Terraform's ``output -json`` produces, i.e. each top-level key is an
+# OpenTofu's ``output -json`` produces, i.e. each top-level key is an
 # output name with ``{value, type, sensitive}`` underneath. We only care
 # about the ``value`` of three well-known outputs from the Online-IDE
 # template (and any template that follows the same conventions):
@@ -170,7 +170,7 @@ def _normalise_account_key(value: str | None) -> str:
     Worker templates derive Linux-friendly account names from emails
     by replacing every non-``[a-z0-9]`` character with a single ``-``.
     A user with email ``luca.baeck@gmail.com`` becomes ``luca-baeck``
-    in the terraform output, while our DB has ``luca`` as the
+    in the OpenTofu output, while our DB has ``luca`` as the
     username and ``luca.baeck`` as the email's local-part. Comparing
     those literally misses every match where the template applied any
     transformation. We collapse ``.``/``-``/``_``/spaces to a single
@@ -219,7 +219,7 @@ def _find_account_for_user(
     alongside the untouched account dict — or ``None``. Kept separate
     from :func:`_access_for_user` so callers that need the raw entry
     (e.g. the per-member ``/my-access`` endpoint, whose response mirrors
-    the terraform ``user_accounts`` shape) reuse the exact same matching
+    the OpenTofu ``user_accounts`` shape) reuse the exact same matching
     logic as the mail path without re-deriving the normalised form.
     """
     accounts = _user_accounts(outputs)
@@ -426,7 +426,7 @@ def notify_deployment_succeeded(
 
     if not terraform_outputs:
         logger.info(
-            "notify: deployment %s has no terraform outputs, skipping mails",
+            "notify: deployment %s has no OpenTofu outputs, skipping mails",
             deployment_id,
         )
         return
@@ -610,7 +610,7 @@ def get_user_access(
     deployment_id: UUID,
     user_id: UUID,
 ) -> dict[str, Any] | None:
-    """Return the terraform output slices a single member is allowed to see.
+    """Return the OpenTofu output slices a single member is allowed to see.
 
     Powers the ``GET /deployments/{id}/my-access`` endpoint: a team member
     (typically a student) may retrieve THEIR OWN access credentials without
@@ -618,7 +618,7 @@ def get_user_access(
     own account entry is ever returned — teammates' credentials are never
     included.
 
-    The result mirrors the raw terraform ``user_accounts`` / ``team_vms``
+    The result mirrors the raw OpenTofu ``user_accounts`` / ``team_vms``
     output shape (one key each: the member's account and their team's VM)
     so the frontend's existing account-matching pipeline consumes it
     unchanged:

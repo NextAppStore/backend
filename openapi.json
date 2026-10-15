@@ -1465,7 +1465,7 @@
           "Admin"
         ],
         "summary": "Approve Version",
-        "description": "Approve a PENDING version \u2014 makes it deployable by all users.\n\nValidates the ``@openstack`` markers in this version's Terraform/Packer\nvariable files before flipping the status, using the same helper as\n``GET /apps/{id}/variables``.",
+        "description": "Approve a PENDING version \u2014 makes it deployable by all users.\n\nValidates the ``@openstack`` markers in this version's OpenTofu/Packer\nvariable files before flipping the status, using the same helper as\n``GET /apps/{id}/variables``.",
         "operationId": "approve_version_admin_apps__app_id__versions__version_tag__approve_post",
         "security": [
           {
@@ -1885,7 +1885,7 @@
           "Deployments"
         ],
         "summary": "Get Deployment",
-        "description": "Get deployment by ID with full details including:\n- User and App relations\n- Teams with members\n- Latest task status\n- Terraform outputs\n- Optionally: full logs (use include_logs=true)",
+        "description": "Get deployment by ID with full details including:\n- User and App relations\n- Teams with members\n- Latest task status\n- OpenTofu outputs\n- Optionally: full logs (use include_logs=true)",
         "operationId": "get_deployment_deployments__deployment_id__get",
         "security": [
           {
@@ -2106,7 +2106,7 @@
           "Deployments"
         ],
         "summary": "Redeploy Deployment Resource",
-        "description": "Replace one compute instance via ``terraform apply -replace=\u2026``.\n\nAddress-whitelisted: we re-parse the cached TF state and only\naccept addresses that resolve to a compute instance. Anything else\nfails with 422 \u2014 the redeploy of a network resource would tear\ndown all the team VMs, which is not what a one-VM \"fix it\" action\nshould do.\n\nConcurrency: same per-user advisory lock as create/destroy/pause\nso a parallel redeploy can't race a destroy. The lock is held\nonly for the row insert; Celery dispatch happens after commit.",
+        "description": "Replace one compute instance via ``tofu apply -replace=\u2026``.\n\nAddress-whitelisted: we re-parse the cached TF state and only\naccept addresses that resolve to a compute instance. Anything else\nfails with 422 \u2014 the redeploy of a network resource would tear\ndown all the team VMs, which is not what a one-VM \"fix it\" action\nshould do.\n\nConcurrency: same per-user advisory lock as create/destroy/pause\nso a parallel redeploy can't race a destroy. The lock is held\nonly for the row insert; Celery dispatch happens after commit.",
         "operationId": "redeploy_deployment_resource_deployments__deployment_id__resources__address__redeploy_post",
         "security": [
           {
@@ -2316,7 +2316,7 @@
           "Deployments"
         ],
         "summary": "Get My Access",
-        "description": "Return the calling member's OWN access credentials for a deployment.\n\nThe full terraform ``outputs`` are owner-view-only (they carry every\nteammate's credentials in one object). This endpoint is the member\ncounterpart: a team member \u2014 typically a student \u2014 retrieves only\nTHEIR OWN account, extracted server-side from the latest successful\ndeploy. Teammates' credentials are never included in the response.\n\nAuthorisation reuses :func:`ensure_resend_access` with the target set\nto the caller themself, which collapses to the member-view gate\n(owner, staff, team-member, or direct mapping). A caller with no\naccess to the deployment gets 403; the resend endpoint uses the same\ngate for the self-resend button, so the two stay consistent.\n\nReturns 200 with empty maps when there's no successful deploy yet or\nthe app issued no per-user credential for this user \u2014 the UI renders\na \"no credentials yet\" state rather than treating it as an error.",
+        "description": "Return the calling member's OWN access credentials for a deployment.\n\nThe full OpenTofu ``outputs`` are owner-view-only (they carry every\nteammate's credentials in one object). This endpoint is the member\ncounterpart: a team member \u2014 typically a student \u2014 retrieves only\nTHEIR OWN account, extracted server-side from the latest successful\ndeploy. Teammates' credentials are never included in the response.\n\nAuthorisation reuses :func:`ensure_resend_access` with the target set\nto the caller themself, which collapses to the member-view gate\n(owner, staff, team-member, or direct mapping). A caller with no\naccess to the deployment gets 403; the resend endpoint uses the same\ngate for the self-resend button, so the two stay consistent.\n\nReturns 200 with empty maps when there's no successful deploy yet or\nthe app issued no per-user credential for this user \u2014 the UI renders\na \"no credentials yet\" state rather than treating it as an error.",
         "operationId": "get_my_access_deployments__deployment_id__my_access_get",
         "security": [
           {
@@ -3374,7 +3374,7 @@
           "OpenStack Resources"
         ],
         "summary": "List Keypairs",
-        "description": "SSH keypairs of the user. Here the identity is always the ``name``,\nnever the ID \u2014 Keystone keypairs do have IDs but Terraform modules\nuse the name.",
+        "description": "SSH keypairs of the user. Here the identity is always the ``name``,\nnever the ID \u2014 Keystone keypairs do have IDs but OpenTofu modules\nuse the name.",
         "operationId": "list_keypairs_me_openstack_resources_keypairs_get",
         "responses": {
           "200": {
@@ -3423,7 +3423,7 @@
           "OpenStack Resources"
         ],
         "summary": "List Floating Ip Pools",
-        "description": "There is no dedicated ``Pool`` resource in OpenStack \u2014 pools are\nnetworks with ``router:external = true``. Terraform modules usually\nexpect the **name** of the external network.",
+        "description": "There is no dedicated ``Pool`` resource in OpenStack \u2014 pools are\nnetworks with ``router:external = true``. OpenTofu modules usually\nexpect the **name** of the external network.",
         "operationId": "list_floating_ip_pools_me_openstack_resources_floating_ip_pools_get",
         "responses": {
           "200": {
@@ -4711,7 +4711,7 @@
           "size"
         ],
         "title": "DeploymentFileUpload",
-        "description": "Single file uploaded by the teacher in the deploy wizard.\n\nPersisted verbatim into ``userInputVar.terraform`` keyed by the\nvariable name (and recipient key for team/user scope) so the worker\npasses it to terraform and cloud-init decodes it into ``write_files``.\n\n``content_b64`` MUST be standard (RFC 4648) base64. The value sent\nto Terraform stays base64 for cloud-init's ``encoding: b64``."
+        "description": "Single file uploaded by the teacher in the deploy wizard.\n\nPersisted verbatim into ``userInputVar.terraform`` keyed by the\nvariable name (and recipient key for team/user scope) so the worker\npasses it to OpenTofu and cloud-init decodes it into ``write_files``.\n\n``content_b64`` MUST be standard (RFC 4648) base64. The value sent\nto OpenTofu stays base64 for cloud-init's ``encoding: b64``."
       },
       "DeploymentOutputs": {
         "properties": {
@@ -4730,7 +4730,7 @@
         },
         "type": "object",
         "title": "DeploymentOutputs",
-        "description": "Parsed Terraform outputs - structure depends on app"
+        "description": "Parsed OpenTofu outputs - structure depends on app"
       },
       "DeploymentResourceListResponse": {
         "properties": {
@@ -5257,7 +5257,7 @@
         },
         "type": "object",
         "title": "MyAccessResponse",
-        "description": "A single team member's own access credentials.\n\nReturned by ``GET /deployments/{id}/my-access`` so a member (student)\ncan see their OWN credentials without the owner-view that gates the\nfull outputs. Only the caller's own account is ever present.\n\nBoth maps mirror the raw terraform ``user_accounts`` / ``team_vms``\noutput shape (one key each: the member's account and their team's VM)\nso the frontend's existing account-matching pipeline consumes this\nunchanged. Empty maps mean \"no credentials yet\" (no successful deploy,\nor the app issued no per-user account) \u2014 a valid 200, not an error."
+        "description": "A single team member's own access credentials.\n\nReturned by ``GET /deployments/{id}/my-access`` so a member (student)\ncan see their OWN credentials without the owner-view that gates the\nfull outputs. Only the caller's own account is ever present.\n\nBoth maps mirror the raw OpenTofu ``user_accounts`` / ``team_vms``\noutput shape (one key each: the member's account and their team's VM)\nso the frontend's existing account-matching pipeline consumes this\nunchanged. Empty maps mean \"no credentials yet\" (no successful deploy,\nor the app issued no per-user account) \u2014 a valid 200, not an error."
       },
       "NetworkAddressSchema": {
         "properties": {
