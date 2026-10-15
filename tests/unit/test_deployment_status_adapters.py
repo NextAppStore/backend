@@ -477,7 +477,8 @@ def test_addresses_preserve_every_family_and_type(addresses, reverse):
     ]})
     row = _addresses_from(server)[0]
     assert [(ip.address, ip.type, ip.version) for ip in row.ips] == entries
-    assert row.fixed_ip == next(a for a, t, _ in entries if t == "fixed")
+    assert row.fixed_ip == next((a for a, t, v in entries if t == "fixed" and v == 4), None)
+    assert row.fixed_ip_v6 == next((a for a, t, v in entries if t == "fixed" and v == 6), None)
     floating = [a for a, t, _ in entries if t == "floating"]
     assert row.floating_ip == (floating[-1] if floating else None)
 
@@ -510,7 +511,7 @@ _FAMILY_CASES = [
     pytest.param([_V6, _V6B, _V4], _V4, _V6, id="v6-v6-v4-keeps-first-of-each"),
     pytest.param([_V4, _V4B, _V6], _V4, _V6, id="two-v4"),
     pytest.param([_V4], _V4, None, id="v4-only"),
-    pytest.param([_V6], _V6, _V6, id="v6-only-keeps-legacy-fallback"),
+    pytest.param([_V6], None, _V6, id="v6-only"),
     pytest.param([], None, None, id="empty"),
 ]
 
@@ -585,8 +586,8 @@ def test_ports_preserve_all_addresses_and_subnets(addresses):
     conn = SimpleNamespace(network=SimpleNamespace(ports=lambda **_kw: [port]))
     row = _fetch_ports(conn, "vm")[0]
     assert [(ip.address, ip.version, ip.subnet_id) for ip in row.fixed_ips] == addresses
-    v4 = next((a for a, version, _ in addresses if version == 4), None)
-    assert row.fixed_ip == (v4 or (addresses[0][0] if addresses else None))
+    assert row.fixed_ip == next((a for a, version, _ in addresses if version == 4), None)
+    assert row.fixed_ip_v6 == next((a for a, version, _ in addresses if version == 6), None)
 
 
 @pytest.mark.unit

@@ -123,15 +123,25 @@ von OpenStack gemeldeten Adressen. Jeder Eintrag enthält `address`, `version`
 Fehlender Adresstyp wird wie bisher als `fixed` behandelt. Die IP-Version
 wird aus der Adresse bestimmt, auch wenn OpenStack keine Version mitsendet.
 
-Die bisherigen Felder bleiben zur Kompatibilität erhalten: `fixed_ip` enthält
-weiterhin die erste Fixed IP, `floating_ip` die letzte Floating IP. Diese
-Einzelfelder sind keine Empfehlung für die Erreichbarkeit oder IP-Version;
-Clients für Dual Stack verwenden die vollständige `ips`-Liste. Die Reihenfolge
-entspricht der OpenStack-Antwort. Fehlende oder leere Adressen werden ignoriert.
+Zusätzlich gibt es je Netzwerk zwei Einzelfelder, die jeweils genau eine
+Adressfamilie tragen, unabhängig von der Reihenfolge der OpenStack-Antwort:
+
+- `fixed_ip`: erste Fixed-**IPv4**, sonst `null`.
+- `fixed_ip_v6`: erste Fixed-**IPv6**, sonst `null`.
+- `floating_ip`: letzte Floating IP.
+
+Ein Netzwerk nur mit IPv6 hat also `fixed_ip = null` und `fixed_ip_v6` gesetzt.
+Adressen mit nicht erkennbarer Version erscheinen nur in `ips`. Clients, die
+alle Adressen brauchen, verwenden die vollständige `ips`-Liste. Fehlende oder
+leere Adressen werden ignoriert.
+
+> **Änderung:** Früher war `fixed_ip` „die erste Fixed IP“ in der Reihenfolge
+> von OpenStack und konnte damit auch eine IPv6 sein. Das gilt nicht mehr.
 
 Port-Details enthalten entsprechend `ports[].fixed_ips` mit `address`,
-`version` und `subnet_id` für jede Adresse. Das bestehende `ports[].fixed_ip`
-bleibt die erste gültige Adresse; `fixed_ips` ist bei Ports ohne Adressen leer.
+`version` und `subnet_id` für jede Adresse sowie `ports[].fixed_ip` (erste
+IPv4, sonst `null`) und `ports[].fixed_ip_v6` (erste IPv6, sonst `null`).
+`fixed_ips` ist bei Ports ohne Adressen leer.
 
 ### Adressen in Terraform-Zugangsoutputs
 

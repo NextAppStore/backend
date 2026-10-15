@@ -534,16 +534,18 @@ def _primary_fixed_addresses(
     """Pick the ``(fixed_ip, fixed_ip_v6)`` pair from fixed addresses.
 
     Nova and Neutron do not guarantee the order of a dual-stack network's
-    addresses, so the choice is by family, never by position:
+    addresses, so the choice is by family, never by position. Each field
+    carries exactly one family:
 
-    * ``fixed_ip`` is the first IPv4 address. A network without any IPv4
-      address keeps the legacy behaviour (the first address, whatever its
-      family) so v6-only networks still show something.
+    * ``fixed_ip`` is the first IPv4 address, or ``None``.
     * ``fixed_ip_v6`` is the first IPv6 address, or ``None``.
+
+    Addresses of unknown version only appear in the full ``ips`` /
+    ``fixed_ips`` lists.
     """
     v4 = next((a.address for a in addresses if a.version == 4), None)
     v6 = next((a.address for a in addresses if a.version == 6), None)
-    return v4 or (addresses[0].address if addresses else None), v6
+    return v4, v6
 
 
 def _addresses_from(server: Any) -> list[NetworkAddress]:

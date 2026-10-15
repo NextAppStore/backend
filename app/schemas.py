@@ -373,7 +373,7 @@ class NetworkAddressSchema(BaseModel):
     network: str
     fixed_ip: str | None = Field(
         default=None,
-        description="First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4.",
+        description="First fixed IPv4 address, or null if there is none.",
     )
     fixed_ip_v6: str | None = Field(
         default=None,
@@ -397,7 +397,7 @@ class NetworkPortSchema(BaseModel):
     mac: str | None = None
     fixed_ip: str | None = Field(
         default=None,
-        description="First fixed IPv4 address. Falls back to the first fixed address on networks without IPv4.",
+        description="First fixed IPv4 address, or null if there is none.",
     )
     fixed_ip_v6: str | None = Field(
         default=None,
