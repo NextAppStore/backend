@@ -73,10 +73,11 @@ Execute all verification inside the sandbox container (run from `backend/` or ad
 - **Keine synchronen Cloud-Operationen in HTTP-Endpunkten:**
   - FastAPI-Endpunkte dürfen niemals langwierige oder potenziell blockierende Cloud-Aktionen (wie OpenTofu `apply`/`destroy`, Packer-Builds oder direkte synchrone OpenStack-Provisionierungen) direkt im Request-Thread ausführen.
   - Synchrone Aufrufe gefährden die Stabilität, führen zu HTTP-Timeouts und blockieren den ASGI-Worker.
-- **Typisierte Celery-Tasks via RabbitMQ:**
-  - Sämtliche Cloud- und Infrastrukturjobs müssen als typisierte Celery-Tasks an den RabbitMQ-Broker übergeben werden (`app.services.task_service.dispatch_to_celery` bzw. `celery_app.send_task(...)`).
+- **Jobs über die Postgres-Queue (kein Broker):**
+  - Sämtliche Cloud- und Infrastrukturjobs werden als Zeile in `tasks` mit versiegeltem Job-Payload eingereiht (`app.services.task_service.prepare_task_in_tx`). Der Worker holt sie per `SELECT … FOR UPDATE SKIP LOCKED`; RabbitMQ, Redis und Celery gibt es nicht mehr.
   - **Transaktionales Muster:**
-    1. Erstellen des Task-Datensatzes mit Status `PENDING` in der Datenbank.
-    2. Commit der DB-Transaktion.
-    3. Asynchroner Dispatch an Celery außerhalb der offenen Transaktion.
-    4. Sofortige HTTP 202 (Accepted) Response an den Client mit `taskId` und Statusabfrage-Endpunkt.
+    1. Fachliche Änderung (Deployment, Teams, …) und Task-Zeile (Status `PENDING`, Payload über `JobPayload`) in **derselben** Transaktion anlegen.
+    2. Commit — das ist die Übergabe an den Worker (Trigger `task_queued`). Es gibt keinen zweiten Dispatch-Schritt, der danach scheitern könnte.
+    3. Sofortige HTTP 202 (Accepted) Response an den Client mit `taskId` und Statusabfrage-Endpunkt.
+  - **Nacharbeit nach Task-Ende** (Mails, Soft-Delete) gehört in `app.services.task_finalizer` und läuft genau einmal (`finalized_at`); niemals in einen Request-Handler oder pro Prozess.
+  - **Vertrag mit dem Worker-Repo:** Die Spalten, die der Worker lesen/schreiben darf, vergibt die Migration `f8a9b0c1d2e3_worker_role.py`; `tests/test_worker_contract.py` prüft sie gegen die echten Migrationen. Änderungen daran nur zusammen mit `worker/app/job_tables.py` (Worker zuerst ausrollen).
