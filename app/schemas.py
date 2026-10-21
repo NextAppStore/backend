@@ -452,13 +452,11 @@ class DeploymentResourceListResponse(BaseModel):
 # ----------------------------------------------------------------
 class TaskBase(BaseModel):
     deploymentId: UUID
-    celeryTaskId: str
     type: TaskType
     status: TaskStatus
     started_at: datetime | None = None
     finished_at: datetime | None = None
     logs: str | None = None
-    tf_state: str | None = None
     outputs: str | None = None
     current_phase: str | None = None
     progress_pct: int | None = None
@@ -472,7 +470,6 @@ class TaskUpdate(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     logs: str | None = None
-    tf_state: str | None = None
     outputs: str | None = None
     current_phase: str | None = None
     progress_pct: int | None = None

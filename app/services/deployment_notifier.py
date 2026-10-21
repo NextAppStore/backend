@@ -403,7 +403,7 @@ def notify_deployment_succeeded(
     deployment_id: UUID,
     terraform_outputs: dict[str, Any] | None,
 ) -> None:
-    """Top-level entry point — call from the celery event listener
+    """Top-level entry point — called by ``task_finalizer`` (exactly once)
     after a successful DEPLOY task.
 
     Loads the deployment with all relations, walks its teams, and

@@ -11,7 +11,7 @@ Each test maps to one CRUD entry point in
   * get_decrypted_for_backend      — backend-only plaintext read
   * stamp_validation               — touch-up of validation metadata
   * delete                         — idempotent removal
-  * get_dispatch_envelope          — JSON-safe Celery envelope
+  * get_dispatch_envelope          — JSON-safe envelope for the job payload
 """
 from __future__ import annotations
 
@@ -192,10 +192,10 @@ def test_delete_removes_row_idempotently(db, mock_user):
 
 
 # ----------------------------------------------------------------
-# get_dispatch_envelope: JSON-safe Celery payload
+# get_dispatch_envelope: JSON-safe envelope for the job payload
 # ----------------------------------------------------------------
 @pytest.mark.integration
-def test_get_dispatch_envelope_includes_minimal_fields_for_celery(db, mock_user):
+def test_get_dispatch_envelope_includes_minimal_fields_for_the_job_payload(db, mock_user):
     crud_creds.upsert(
         db,
         mock_user.userId,
@@ -235,7 +235,7 @@ def test_get_dispatch_envelope_includes_minimal_fields_for_celery(db, mock_user)
     assert envelope["auth_type"] == OpenStackAuthType.PASSWORD.value
     assert isinstance(envelope["auth_type"], str)
 
-    # ---- Ciphertext is base64-ascii so it survives Celery JSON transport ----
+    # ---- Ciphertext is base64-ascii so it survives the JSON job payload ----
     id_b64 = envelope["encrypted_identifier_b64"]
     sec_b64 = envelope["encrypted_secret_b64"]
     assert isinstance(id_b64, str)

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Backend API",
-    "description": "FastAPI Backend with Auth, Git & Celery Integration",
+    "description": "FastAPI Backend with Auth, Git & a Postgres job queue",
     "version": "1.0.0"
   },
   "paths": {
@@ -1838,7 +1838,7 @@
           "Deployments"
         ],
         "summary": "Create Deployment",
-        "description": "Create a new deployment\n\nAtomicity: a per-user advisory lock serializes credential mutation\nwith deployment dispatch. The deployment row, teams, user mappings,\nand the initial PENDING task row are all inserted in a single\ntransaction, so the user can never end up with a deployment row\nthat has no matching task. Celery dispatch happens AFTER commit;\nif it fails, the task row is flipped to FAILED so the deployment\nsurfaces an honest error instead of hanging in PENDING forever.",
+        "description": "Create a new deployment\n\nAtomicity: a per-user advisory lock serializes credential mutation\nwith deployment dispatch. The deployment row, teams, user mappings,\nand the initial PENDING task row (with the sealed job payload) are all\ninserted in a single transaction. Committing it hands the job to the\nworker: there is no second dispatch step that could fail afterwards.",
         "operationId": "create_deployment_deployments__post",
         "security": [
           {
@@ -2106,7 +2106,7 @@
           "Deployments"
         ],
         "summary": "Redeploy Deployment Resource",
-        "description": "Replace one compute instance via ``tofu apply -replace=\u2026``.\n\nAddress-whitelisted: we re-parse the cached TF state and only\naccept addresses that resolve to a compute instance. Anything else\nfails with 422 \u2014 the redeploy of a network resource would tear\ndown all the team VMs, which is not what a one-VM \"fix it\" action\nshould do.\n\nConcurrency: same per-user advisory lock as create/destroy/pause\nso a parallel redeploy can't race a destroy. The lock is held\nonly for the row insert; Celery dispatch happens after commit.",
+        "description": "Replace one compute instance via ``tofu apply -replace=\u2026``.\n\nAddress-whitelisted: we re-parse the cached TF state and only\naccept addresses that resolve to a compute instance. Anything else\nfails with 422 \u2014 the redeploy of a network resource would tear\ndown all the team VMs, which is not what a one-VM \"fix it\" action\nshould do.\n\nConcurrency: same per-user advisory lock as create/destroy/pause\nso a parallel redeploy can't race a destroy. The lock is held\nuntil the task row is committed.",
         "operationId": "redeploy_deployment_resource_deployments__deployment_id__resources__address__redeploy_post",
         "security": [
           {
@@ -2432,7 +2432,7 @@
           "Deployments"
         ],
         "summary": "Stream Deployment Events",
-        "description": "Live progress + log stream for one deployment as Server-Sent Events.\n\nThe connection is authenticated with the same Keycloak dependency\nused elsewhere; the standard auth middleware also vets the token\nbefore this handler runs. After auth we attach to the in-process\npubsub for this deployment and forward every event to the client.",
+        "description": "Live progress + log stream for one deployment as Server-Sent Events.\n\nStreams the events of the deployment's latest task, from its start\n(or from ``Last-Event-ID`` on a reconnect), then follows new ones until\nthe task's terminal event. The connection is authenticated with the\nsame Keycloak dependency used elsewhere.",
         "operationId": "stream_deployment_events_deployments__deployment_id__stream_get",
         "security": [
           {
@@ -5891,10 +5891,6 @@
             "format": "uuid",
             "title": "Deploymentid"
           },
-          "celeryTaskId": {
-            "type": "string",
-            "title": "Celerytaskid"
-          },
           "type": {
             "$ref": "#/components/schemas/TaskType"
           },
@@ -5935,17 +5931,6 @@
               }
             ],
             "title": "Logs"
-          },
-          "tf_state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tf State"
           },
           "outputs": {
             "anyOf": [
@@ -5994,7 +5979,6 @@
         "type": "object",
         "required": [
           "deploymentId",
-          "celeryTaskId",
           "type",
           "status",
           "taskId",

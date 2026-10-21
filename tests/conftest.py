@@ -40,18 +40,15 @@ killt die Suite die Dev-Daten.
 """
 
 import os
-import time
 import uuid
 import warnings
 
 # IMPORTANT: this env-var must be set BEFORE ``app.main`` is imported.
 # ``lifespan`` reads it on every ``TestClient(app)`` enter to decide
-# whether to spawn the Celery event-listener thread and reconciler
-# task. Without this gate, each test-client context stacks up another
-# listener thread (daemon, never cleanly stopped) that holds DB +
-# broker connections — within a handful of tests the SQLAlchemy pool
-# is exhausted and the next legit query deadlocks. See ``app/main.py``
-# for the full rationale.
+# whether to start the database listener (LISTEN connection) and the
+# task reaper. Without this gate, each test-client context would open
+# its own listener and reaper against the test database. Tests that
+# need them start them explicitly (see ``tests/test_db_events.py``).
 os.environ.setdefault("DISABLE_BACKGROUND_TASKS", "1")
 
 import pytest
@@ -60,14 +57,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.database import Base, get_db
+from app.database import Base, get_db, sqlalchemy_url
 from app.main import app
 from app.models import (  # noqa: F401  (importiert für seitliche Effekte / Metadata-Registrierung)
     App,
     User,
     UserRole,
 )
-from app.utils import lti_auth
 from app.utils.permissions import get_current_user as get_current_user_keycloak
 
 # ----------------------------------------------------------------
@@ -79,7 +75,7 @@ from app.utils.permissions import get_current_user as get_current_user_keycloak
 # Test) und der dahinterliegende ``TestClient`` zusätzlich
 # Dependency-overrides für ``get_db`` öffnet. Bei 7 max-Connections
 # (alter Wert) trat in der Praxis Pool-Exhaustion auf, sobald die
-# Background-Task-Threads (jetzt deaktiviert) noch dazukamen.
+# Hintergrund-Tasks (Listener, Reaper; im Test deaktiviert) noch dazukamen.
 # 20 reicht mit Reserve; sequentielle Suite, Postgres-Container hat
 # ``max_connections=100`` per Default.
 # ----------------------------------------------------------------
@@ -93,7 +89,7 @@ if _TEST_DB_URL == settings.DATABASE_URL:
     )
 
 engine = create_engine(
-    _TEST_DB_URL,
+    sqlalchemy_url(_TEST_DB_URL),
     pool_pre_ping=True,
     pool_size=20,
     max_overflow=10,
@@ -301,39 +297,34 @@ def unauth_client():
 
 
 # ----------------------------------------------------------------
-# LTI NONCE STORE (fake Redis)
+# JOB QUEUE
 # ----------------------------------------------------------------
-# app.utils.lti_auth talks to Redis for the OIDC state/nonce store (see
-# its module docstring). Autouse + session-independent: any test that
-# exercises /lti/login or create_login_attempt()/consume_login_attempt()
-# directly — not just tests/unit/test_utils_lti_auth.py — would otherwise
-# try to open a real connection to the `redis` hostname, which doesn't
-# resolve outside the docker-compose network (this is what broke CI).
-class _FakeRedis:
-    """Minimal in-memory stand-in for the two redis-py calls lti_auth
-    makes (setex, getdel)."""
+@pytest.fixture
+def queued_jobs():
+    """Read the jobs queued for the worker so far.
 
-    def __init__(self):
-        self._store: dict[str, tuple[str, float]] = {}
+    Returns a callable yielding ``[(task, payload_dict), ...]`` for every
+    task that still carries a sealed payload (i.e. queued and not yet
+    claimed), oldest first, with the payload decrypted the way the worker
+    decrypts it. Replaces the old ``send_task`` mock: tests now check what
+    actually lands in the queue.
+    """
+    import json
 
-    def setex(self, key: str, ttl: int, value: str) -> None:
-        self._store[key] = (value, time.time() + ttl)
+    from app.models import Task
+    from app.utils.crypto import decrypt
 
-    def getdel(self, key: str) -> str | None:
-        entry = self._store.pop(key, None)
-        if entry is None:
-            return None
-        value, expiry = entry
-        return value if expiry >= time.time() else None
+    def _read():
+        with TestingSessionLocal() as session:
+            tasks = (
+                session.query(Task)
+                .filter(Task.payload.isnot(None))
+                .order_by(Task.created_at)
+                .all()
+            )
+            return [(t, json.loads(decrypt(t.payload))) for t in tasks]
 
-
-@pytest.fixture(autouse=True)
-def _fake_lti_redis_client():
-    """Isolate app.utils.lti_auth's module-level Redis client between tests."""
-    fake = _FakeRedis()
-    lti_auth._redis_client = fake
-    yield fake
-    lti_auth._redis_client = None
+    return _read
 
 
 # ----------------------------------------------------------------

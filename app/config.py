@@ -3,12 +3,16 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Database
+    # Database. Also the job queue: deployments, teams and the task the
+    # worker picks up are written in one transaction (see task_service).
     DATABASE_URL: str
 
-    # Celery (optional - only needed for API runtime, not for migrations)
-    CELERY_BROKER_URL: str = "amqp://admin:admin@rabbitmq:5672/"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
+    # A RUNNING task whose lease the worker stopped renewing belongs to a
+    # worker that died; every API process checks for those this often and
+    # fails them (task_finalizer.reap_expired). The worker renews its lease
+    # every third of WORKER_LEASE_SECONDS (default 120 s), so 30 s is
+    # plenty fine-grained.
+    TASK_REAPER_INTERVAL_SECONDS: int = 30
 
     # Git
     TEMP_REPO_BASE_PATH: str = "/tmp/worker_repos"
@@ -42,20 +46,13 @@ class Settings(BaseSettings):
     # rotation schedule.
     LTI_SESSION_SECRET: str = ""
     LTI_SESSION_TOKEN_TTL_SECONDS: int = 3600
-    # Shared store for the OIDC state/nonce pairs minted in /lti/login and
-    # consumed in /lti/launch. Must be shared across processes — uvicorn
-    # runs multiple workers, and Moodle's login and launch requests can
-    # land on different ones, so an in-memory dict here would randomly
-    # 401 launches that hit a worker that never saw the /lti/login call.
-    # Separate DB index from CELERY_RESULT_BACKEND (db 0) on the same
-    # Redis instance so this never collides with Celery's keys.
-    LTI_NONCE_REDIS_URL: str = "redis://redis:6379/1"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # Symmetric Fernet key shared with the worker. Used to encrypt OpenStack
-    # credentials at rest and to seal the envelope shipped through Celery.
+    # credentials and OpenTofu state at rest and to seal the job payload the
+    # worker reads from the task row.
     # Generate: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
     CREDENTIAL_ENCRYPTION_KEY: str
 

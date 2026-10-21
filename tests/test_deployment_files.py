@@ -2,13 +2,12 @@
 
 Covers the round-trip from POST /deployments (with ``files`` field)
 to GET detail (file bytes stripped) to GET /files/... (full payload
-returned to owner). Celery is patched out — these tests don't go to
-RabbitMQ.
+returned to owner). The queued job is read back from the task row,
+which is what the worker sees.
 """
 import base64
 import json
 import uuid
-from unittest.mock import patch
 
 import pytest
 
@@ -55,21 +54,11 @@ def _ensure_app(db, user) -> App:
     return app
 
 
-@pytest.fixture
-def patched_celery():
-    class _FakeAsyncResult:
-        id = "fake-celery-task-id"
-
-    with patch(
-        "app.services.task_service.celery_app.send_task",
-        return_value=_FakeAsyncResult(),
-    ) as m:
-        yield m
 
 
 @pytest.mark.integration
 def test_post_deployment_persists_files_under_terraform(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
@@ -115,18 +104,18 @@ def test_post_deployment_persists_files_under_terraform(
     # Existing terraform vars were preserved through the merge.
     assert persisted["terraform"]["some_other"] == "x"
 
-    # Celery args carry the same dict — the worker sees what's in
-    # the DB.
-    celery_args = patched_celery.call_args.kwargs.get("args") or patched_celery.call_args.args[1]
-    user_vars_arg = celery_args[4]
+    # The queued job payload carries the same dict — the worker sees
+    # what's in the DB.
+    [(_task, job)] = queued_jobs()
+    user_vars_arg = job["user_vars"]
     assert user_vars_arg["terraform"]["task_pdf"]["all"]["content_b64"] == _b64(pdf)
 
 
 @pytest.mark.integration
 def test_post_deployment_413_when_single_file_too_large(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
-    """One file over 2 MB → 413, no row created, no celery dispatch."""
+    """One file over 2 MB → 413, no row created, nothing queued."""
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
 
@@ -150,7 +139,7 @@ def test_post_deployment_413_when_single_file_too_large(
     )
     assert response.status_code == 413
     assert response.json()["detail"]["reason"] == "file_too_large"
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
     # No deployment row should have been written.
     assert (
         db.query(Deployment)
@@ -161,7 +150,7 @@ def test_post_deployment_413_when_single_file_too_large(
 
 @pytest.mark.integration
 def test_post_deployment_422_on_invalid_base64(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
@@ -185,12 +174,12 @@ def test_post_deployment_422_on_invalid_base64(
     )
     assert response.status_code == 422
     assert response.json()["detail"]["reason"] == "file_b64_invalid"
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
 def test_detail_endpoint_strips_file_bytes(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
@@ -224,7 +213,7 @@ def test_detail_endpoint_strips_file_bytes(
 
 @pytest.mark.integration
 def test_download_endpoint_returns_owner_bytes(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
@@ -259,7 +248,7 @@ def test_download_endpoint_returns_owner_bytes(
 
 @pytest.mark.integration
 def test_download_endpoint_404_for_unknown_slot(
-    client, db, mock_user, patched_celery
+    client, db, mock_user, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app = _ensure_app(db, mock_user)
@@ -297,7 +286,7 @@ def test_download_endpoint_404_for_unknown_slot(
 
 @pytest.mark.integration
 def test_download_endpoint_member_403(
-    client, db, mock_user, patched_celery, unauth_client
+    client, db, mock_user, queued_jobs, unauth_client
 ):
     """A team member with read-access to the deployment must NOT be
     able to fetch file bytes — only the owner-view does."""

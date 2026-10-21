@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import os
-import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.database import libpq_url
 from app.routers import (
     admin_apps,
     apps,
@@ -16,6 +16,7 @@ from app.routers import (
     courses,
     dashboard,
     deployments,
+    internal_tfstate,
     openstack_credentials,
     openstack_resources,
     quotas,
@@ -23,17 +24,16 @@ from app.routers import (
     teams,
     users,
 )
-from app.services.celery_event_listener import start_event_listener
-from app.services.deployment_pubsub import pubsub
-from app.services.reconciler import run_reconciler
+from app.services import task_finalizer
+from app.services.db_events import dispatcher as db_events
 
 logger = logging.getLogger(__name__)
 
 
 # ``DISABLE_BACKGROUND_TASKS`` short-circuits the lifespan body so the
-# app is fully wired but the Celery listener and reconciler are not
-# started. Used by the test suite, where per-TestClient lifespans would
-# otherwise stack daemon threads and exhaust the DB connection pool.
+# app is fully wired but the database listener and the task reaper are
+# not started. Used by the test suite, where every TestClient would
+# otherwise open its own LISTEN connection and reaper loop.
 def _background_tasks_disabled() -> bool:
     return os.getenv("DISABLE_BACKGROUND_TASKS", "").lower() in ("1", "true", "yes")
 
@@ -48,11 +48,9 @@ async def lifespan(app: FastAPI):
     logger.info("ℹ️  Use 'alembic upgrade head' to apply database migrations")
 
     if _background_tasks_disabled():
-        # Test path: keep ``app`` fully functional but skip the Celery
-        # listener + reconciler.
         logger.info(
-            "DISABLE_BACKGROUND_TASKS set — skipping Celery listener "
-            "and reconciler (test mode)"
+            "DISABLE_BACKGROUND_TASKS set — not starting the database "
+            "listener and the task reaper (test mode)"
         )
         try:
             yield
@@ -60,23 +58,20 @@ async def lifespan(app: FastAPI):
             logger.info("=== Application Shutting Down (test mode) ===")
         return
 
-    # Bind the FastAPI event loop to the deployment pubsub *before*
-    # spawning the Celery listener. The listener thread pushes into
-    # the pubsub from a non-asyncio thread; without a loop reference
-    # those pushes would be silently dropped.
-    pubsub.set_loop(asyncio.get_running_loop())
-    logger.info("Deployment pubsub bound to event loop")
+    # One LISTEN connection per process: wakes this process's live streams
+    # on ``task_events`` and hands ``task_finished`` to the finalizer. On
+    # every (re)connect it catches up on tasks that finished meanwhile.
+    db_events.start(
+        libpq_url(settings.DATABASE_URL),
+        on_task_finished=task_finalizer.finalize_task_by_id,
+        on_connected=task_finalizer.catch_up,
+    )
+    logger.info("Database listener started")
 
-    # Start Celery event listener in background thread
-    listener_thread = threading.Thread(target=start_event_listener, daemon=True)
-    listener_thread.start()
-    logger.info("Celery event listener started in background")
-
-    # Reconciler is the safety net for events the listener missed (lost
-    # event, backend restart during dispatch, broker hiccups). It runs
-    # as an asyncio task so we can cancel it cleanly on shutdown.
-    reconciler_task = asyncio.create_task(run_reconciler())
-    logger.info("Reconciler loop scheduled")
+    # Fails tasks of workers whose lease ran out. A fixed interval is fine
+    # here: noticing a crashed worker is not latency-critical.
+    reaper_task = asyncio.create_task(task_finalizer.run_reaper())
+    logger.info("Task reaper scheduled")
 
     logger.info("Application started")
 
@@ -85,13 +80,14 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("=== Application Shutting Down ===")
-        reconciler_task.cancel()
+        reaper_task.cancel()
         try:
-            await reconciler_task
+            await reaper_task
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("Reconciler task raised on shutdown")
+            logger.exception("Task reaper raised on shutdown")
+        await db_events.stop()
         logger.info("Shutdown complete")
 
 
@@ -100,7 +96,7 @@ async def lifespan(app: FastAPI):
 # ----------------------------------------------------------------
 app = FastAPI(
     title="Backend API",
-    description="FastAPI Backend with Auth, Git & Celery Integration",
+    description="FastAPI Backend with Auth, Git & a Postgres job queue",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -131,6 +127,9 @@ app.include_router(teams.router, prefix="/teams", tags=["Teams"])
 app.include_router(quotas.router, prefix="/quotas", tags=["Quotas"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(openstack_credentials.router, tags=["OpenStack Credentials"])
+# OpenTofu's HTTP state backend for the worker's jobs (per-task token,
+# not in the OpenAPI document, not routed by the public nginx).
+app.include_router(internal_tfstate.router, prefix="/internal/tfstate")
 # Read API for OpenStack resources (Networks, Flavors, Images, ...),
 # used by the wizard's value-help dropdowns so users don't have to type
 # UUIDs from Horizon.

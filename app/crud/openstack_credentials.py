@@ -4,12 +4,12 @@ Two flavours of `get_*` are exposed because the dispatch path and the
 backend's own quotas endpoint have different needs:
 
 * `get_dispatch_envelope` — JSON-safe dict with **base64 ciphertext**
-  for Celery transport. The backend never decrypts here.
+  for the job payload. The backend never decrypts here.
 * `get_decrypted_for_backend` — plaintext dict for the backend's own
   OpenStack calls (quotas). Plaintext lives only in this process's
   memory for the duration of the request.
 
-The plaintext envelope MUST NOT be passed to Celery.
+The plaintext envelope MUST NOT be put into a job payload.
 """
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ def _common_metadata(row: UserOpenStackCredential) -> dict:
 
 
 def get_dispatch_envelope(db: Session, user_id: UUID) -> dict:
-    """Build the JSON-safe envelope shipped to the worker via Celery.
+    """Build the JSON-safe envelope shipped to the worker in the job payload.
 
     Ciphertext is base64-encoded straight from Postgres — no decryption
     hop in the backend. The worker decrypts in-process.
@@ -152,7 +152,7 @@ def get_dispatch_envelope(db: Session, user_id: UUID) -> dict:
 def get_decrypted_for_backend(db: Session, user_id: UUID) -> dict:
     """Plaintext dict for backend-only OpenStack calls (quotas).
 
-    NEVER pass this to Celery. Use `get_dispatch_envelope` for that path.
+    NEVER put this into a job payload. Use `get_dispatch_envelope` for that path.
     """
     row = get_for_user(db, user_id)
     if row is None:

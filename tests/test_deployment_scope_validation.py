@@ -5,7 +5,7 @@ Covers:
 * ``_attach_files_to_user_input`` extension-filter enforcement
 * ``_validate_scoped_user_input`` shape + slot-target checks
 
-These are pure functions — no DB, no FastAPI app, no Celery.
+These are pure functions — no DB, no FastAPI app, no worker.
 """
 import base64
 

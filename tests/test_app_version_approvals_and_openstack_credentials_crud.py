@@ -3,7 +3,7 @@
 Deckt die Branches von ``app.crud.app_version_approvals`` (Submission-,
 Review- und Lifecycle-Pfade der ``AppVersionApproval``-Tabelle) und
 ``app.crud.openstack_credentials`` (Upsert, Validierungs-Stamping,
-Loeschen und die zwei Lese-Pfade fuer Backend bzw. Celery-Dispatch) ab.
+Loeschen und die zwei Lese-Pfade fuer Backend bzw. Job-Payload) ab.
 
 Alle Tests sind ``@pytest.mark.integration`` und ziehen die ``db``-Fixture
 aus ``tests/conftest.py``. ORM-Objekte werden direkt konstruiert; die

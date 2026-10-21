@@ -1,8 +1,8 @@
-"""Symmetric encryption for at-rest credentials and Celery-envelope payloads.
+"""Symmetric encryption for at-rest credentials, OpenTofu state and job payloads.
 
 The Fernet key (`CREDENTIAL_ENCRYPTION_KEY`) is shared between the backend
-and the worker. The backend encrypts when storing in Postgres and forwards
-the ciphertext (base64) through Celery; the worker decrypts in-process.
+and the worker. The backend encrypts when storing in Postgres, including the
+sealed job payload on the task row; the worker decrypts in-process.
 Plaintext never leaves either container's memory.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ def decrypt(token: bytes) -> str:
 
 
 def encrypt_b64(plaintext: str) -> str:
-    """Encrypt and base64-encode for JSON-safe transport (Celery args)."""
+    """Encrypt and base64-encode for JSON-safe transport (the credential envelope)."""
     return base64.b64encode(encrypt(plaintext)).decode("ascii")
 
 
