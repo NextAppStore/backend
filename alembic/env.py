@@ -40,9 +40,12 @@ target_metadata = Base.metadata
 
 # Import settings to get DATABASE_URL
 from app.config import settings
+from app.database import sqlalchemy_url
 
 # Override the sqlalchemy.url in alembic.ini with the one from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# (with the psycopg 3 driver selected, see ``app.database.sqlalchemy_url``).
+# ``%`` is doubled because the config parser interpolates it.
+config.set_main_option("sqlalchemy.url", sqlalchemy_url(settings.DATABASE_URL).replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
