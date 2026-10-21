@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import timedelta
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -15,7 +16,7 @@ from jose import jwk, jwt
 
 from app.config import settings
 from app.crud.courses import get_course_by_lti_context_id
-from app.models import CourseTeacher, User, UserRole
+from app.models import CourseTeacher, LtiLoginState, User, UserRole
 from app.utils import lti_auth
 from app.utils.lti_auth import (
     LTI_CONTEXT_CLAIM,
@@ -30,6 +31,7 @@ from app.utils.lti_auth import (
     verify_lti_launch,
     verify_lti_session_token,
 )
+from app.utils.time import utcnow
 
 INSTRUCTOR_URN = "http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor"
 LEARNER_URN = "http://purl.imsglobal.org/vocab/lis/v2/membership#Learner"
@@ -79,28 +81,47 @@ def test_map_lti_roles_does_not_substring_match():
 # ----------------------------------------------------------------
 # nonce / state replay protection
 # ----------------------------------------------------------------
-# _fake_lti_redis_client is provided autouse by tests/conftest.py (shared
-# with the router-level tests in tests/test_auth_lti_router.py, which also
-# exercise create_login_attempt() indirectly via /lti/login).
+# The pairs live in ``lti_login_states`` so all uvicorn processes share
+# them; these tests run against the test database.
 @pytest.mark.unit
-def test_login_attempt_is_single_use():
-    state, nonce = create_login_attempt()
-    assert consume_login_attempt(state, nonce) is True
-    assert consume_login_attempt(state, nonce) is False
-
-
-@pytest.mark.unit
-def test_login_attempt_unknown_pair_rejected():
-    assert consume_login_attempt("unknown-state", "unknown-nonce") is False
+def test_login_attempt_is_single_use(db):
+    state, nonce = create_login_attempt(db)
+    assert consume_login_attempt(db, state, nonce) is True
+    assert consume_login_attempt(db, state, nonce) is False
 
 
 @pytest.mark.unit
-def test_login_attempt_expired_pair_rejected(_fake_lti_redis_client):
-    state, nonce = create_login_attempt()
-    key = f"lti_login_attempt:{state}:{nonce}"
-    value, _ = _fake_lti_redis_client._store[key]
-    _fake_lti_redis_client._store[key] = (value, time.time() - 1)  # force expiry
-    assert consume_login_attempt(state, nonce) is False
+def test_login_attempt_unknown_pair_rejected(db):
+    assert consume_login_attempt(db, "unknown-state", "unknown-nonce") is False
+
+
+@pytest.mark.unit
+def test_login_attempt_wrong_nonce_rejected_and_pair_kept(db):
+    state, nonce = create_login_attempt(db)
+    assert consume_login_attempt(db, state, "other-nonce") is False
+    # A guessed nonce must not burn the real pair.
+    assert consume_login_attempt(db, state, nonce) is True
+
+
+@pytest.mark.unit
+def test_login_attempt_expired_pair_rejected(db):
+    state, nonce = create_login_attempt(db)
+    db.query(LtiLoginState).filter(LtiLoginState.state == state).update(
+        {"expires_at": utcnow() - timedelta(seconds=1)}
+    )
+    db.commit()
+    assert consume_login_attempt(db, state, nonce) is False
+
+
+@pytest.mark.unit
+def test_create_login_attempt_purges_expired_pairs(db):
+    old_state, _ = create_login_attempt(db)
+    db.query(LtiLoginState).filter(LtiLoginState.state == old_state).update(
+        {"expires_at": utcnow() - timedelta(seconds=1)}
+    )
+    db.commit()
+    create_login_attempt(db)
+    assert db.query(LtiLoginState).filter(LtiLoginState.state == old_state).count() == 0
 
 
 # ----------------------------------------------------------------
@@ -296,29 +317,29 @@ def _sign_launch_token(private_pem, *, kid=TEST_KID, issuer=TEST_ISSUER,
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_happy_path(_rsa_keypair):
+def test_verify_lti_launch_happy_path(_rsa_keypair, db):
     private_pem, jwks = _rsa_keypair
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     token = _sign_launch_token(private_pem, nonce=nonce)
 
     with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
          patch.object(settings, "LTI_CLIENT_ID", TEST_CLIENT_ID), \
          patch.object(settings, "LTI_DEPLOYMENT_ID", ""), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks):
-        claims = verify_lti_launch(token, state=state)
+        claims = verify_lti_launch(token, state=state, db=db)
 
     assert claims["sub"] == "moodle-user-1"
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_malformed_token_raises_401():
+def test_verify_lti_launch_malformed_token_raises_401(db):
     with pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch("not-a-jwt", state="whatever")
+        verify_lti_launch("not-a-jwt", state="whatever", db=db)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_signature_not_matching_jwks_raises_401(_rsa_keypair):
+def test_verify_lti_launch_signature_not_matching_jwks_raises_401(_rsa_keypair, db):
     """Token signed by a key the platform's JWKS doesn't actually contain
     (e.g. a rotated/unknown kid whose key material differs) must fail
     signature verification rather than being accepted."""
@@ -329,47 +350,47 @@ def test_verify_lti_launch_signature_not_matching_jwks_raises_401(_rsa_keypair):
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     token = _sign_launch_token(other_private_pem, kid=TEST_KID, nonce=nonce)
 
     with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
          patch.object(settings, "LTI_CLIENT_ID", TEST_CLIENT_ID), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks), \
          pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch(token, state=state)
+        verify_lti_launch(token, state=state, db=db)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_wrong_issuer_raises_401(_rsa_keypair):
+def test_verify_lti_launch_wrong_issuer_raises_401(_rsa_keypair, db):
     private_pem, jwks = _rsa_keypair
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     token = _sign_launch_token(private_pem, issuer="https://not-moodle.example", nonce=nonce)
 
     with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
          patch.object(settings, "LTI_CLIENT_ID", TEST_CLIENT_ID), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks), \
          pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch(token, state=state)
+        verify_lti_launch(token, state=state, db=db)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_expired_token_raises_401(_rsa_keypair):
+def test_verify_lti_launch_expired_token_raises_401(_rsa_keypair, db):
     private_pem, jwks = _rsa_keypair
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     token = _sign_launch_token(private_pem, nonce=nonce, exp_delta=-10)
 
     with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
          patch.object(settings, "LTI_CLIENT_ID", TEST_CLIENT_ID), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks), \
          pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch(token, state=state)
+        verify_lti_launch(token, state=state, db=db)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_unknown_nonce_raises_401(_rsa_keypair):
+def test_verify_lti_launch_unknown_nonce_raises_401(_rsa_keypair, db):
     private_pem, jwks = _rsa_keypair
     token = _sign_launch_token(private_pem, nonce="never-issued")
 
@@ -377,14 +398,14 @@ def test_verify_lti_launch_unknown_nonce_raises_401(_rsa_keypair):
          patch.object(settings, "LTI_CLIENT_ID", TEST_CLIENT_ID), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks), \
          pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch(token, state="some-state")
+        verify_lti_launch(token, state="some-state", db=db)
     assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
-def test_verify_lti_launch_deployment_id_mismatch_raises_401(_rsa_keypair):
+def test_verify_lti_launch_deployment_id_mismatch_raises_401(_rsa_keypair, db):
     private_pem, jwks = _rsa_keypair
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     token = _sign_launch_token(private_pem, nonce=nonce, deployment_id="deploy-a")
 
     with patch.object(settings, "LTI_PLATFORM_ISSUER", TEST_ISSUER), \
@@ -392,7 +413,7 @@ def test_verify_lti_launch_deployment_id_mismatch_raises_401(_rsa_keypair):
          patch.object(settings, "LTI_DEPLOYMENT_ID", "deploy-b"), \
          patch.object(lti_auth, "_get_jwks", return_value=jwks), \
          pytest.raises(HTTPException) as exc_info:
-        verify_lti_launch(token, state=state)
+        verify_lti_launch(token, state=state, db=db)
     assert exc_info.value.status_code == 401
 
 

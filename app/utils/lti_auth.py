@@ -8,20 +8,22 @@ import logging
 import secrets
 import threading
 import time
+from datetime import timedelta
 from urllib.parse import urlencode
 
-import redis
 import requests
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.crud.courses import get_or_create_course_by_lti_context
 from app.crud.users import get_user_by_email
 from app.database import get_db
-from app.models import CourseTeacher, User, UserRole
+from app.models import CourseTeacher, LtiLoginState, User, UserRole
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -48,45 +50,54 @@ ADMIN_ROLE_URNS = {
 # ----------------------------------------------------------------
 # NONCE / STATE STORE (OIDC replay protection)
 # ----------------------------------------------------------------
-# Shared across processes via Redis — uvicorn runs multiple workers
-# (see docker-compose.staging.yml), and Moodle's /lti/login and
-# /lti/launch requests can land on different ones, so an in-memory
-# dict here would randomly 401 launches that hit a worker that never
-# saw the matching /lti/login call.
+# Shared across processes via the ``lti_login_states`` table — uvicorn
+# runs multiple workers, and Moodle's /lti/login and /lti/launch requests
+# can land on different ones, so an in-memory dict here would randomly
+# 401 launches that hit a worker that never saw the matching /lti/login
+# call. Expired rows are removed whenever a new one is written, so no
+# cleanup timer is needed.
 _LOGIN_ATTEMPT_TTL_SECONDS = 300
-_redis_client: redis.Redis | None = None
-_redis_lock = threading.Lock()
 
 
-def _get_redis_client() -> redis.Redis:
-    global _redis_client
-    if _redis_client is None:
-        with _redis_lock:
-            if _redis_client is None:
-                _redis_client = redis.Redis.from_url(
-                    settings.LTI_NONCE_REDIS_URL, decode_responses=True
-                )
-    return _redis_client
+def create_login_attempt(db: Session) -> tuple[str, str]:
+    """Generate and record a fresh (state, nonce) pair for one login attempt.
 
-
-def create_login_attempt() -> tuple[str, str]:
-    """Generate and record a fresh (state, nonce) pair for one login attempt."""
+    Commits, so the launch request can find it from any process.
+    """
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    key = f"lti_login_attempt:{state}:{nonce}"
-    _get_redis_client().setex(key, _LOGIN_ATTEMPT_TTL_SECONDS, "1")
+    now = utcnow()
+    db.execute(delete(LtiLoginState).where(LtiLoginState.expires_at <= now))
+    db.add(
+        LtiLoginState(
+            state=state,
+            nonce=nonce,
+            expires_at=now + timedelta(seconds=_LOGIN_ATTEMPT_TTL_SECONDS),
+        )
+    )
+    db.commit()
     return state, nonce
 
 
-def consume_login_attempt(state: str, nonce: str) -> bool:
-    """Verify a (state, nonce) pair was issued by us and not yet used.
+def consume_login_attempt(db: Session, state: str, nonce: str) -> bool:
+    """Verify a (state, nonce) pair was issued by us, is unexpired and not yet used.
 
-    Single-use: a valid pair is removed on success (atomically, via
-    GETDEL), so a replayed launch with the same values fails the second
-    time — including when the replay lands on a different worker.
+    Single-use: the row is deleted in the same statement that checks it
+    (``DELETE … RETURNING``) and committed right away, so a replayed launch
+    with the same values fails the second time — including when the replay
+    lands on a different worker or races the first one.
     """
-    key = f"lti_login_attempt:{state}:{nonce}"
-    return _get_redis_client().getdel(key) is not None
+    consumed = db.execute(
+        delete(LtiLoginState)
+        .where(
+            LtiLoginState.state == state,
+            LtiLoginState.nonce == nonce,
+            LtiLoginState.expires_at > utcnow(),
+        )
+        .returning(LtiLoginState.state)
+    ).first()
+    db.commit()
+    return consumed is not None
 
 
 # ----------------------------------------------------------------
@@ -135,7 +146,7 @@ def _jwks_has_kid(jwks: dict, kid: str | None) -> bool:
 # ----------------------------------------------------------------
 # LAUNCH VALIDATION
 # ----------------------------------------------------------------
-def verify_lti_launch(id_token: str, state: str) -> dict:
+def verify_lti_launch(id_token: str, state: str, db: Session) -> dict:
     """Validate a Moodle LTI 1.3 launch ``id_token`` and return its claims.
 
     Checks, in order: signature (via Moodle's JWKS), issuer, audience
@@ -183,7 +194,7 @@ def verify_lti_launch(id_token: str, state: str) -> dict:
         )
 
     nonce = claims.get("nonce")
-    if not nonce or not consume_login_attempt(state, nonce):
+    if not nonce or not consume_login_attempt(db, state, nonce):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="LTI launch state/nonce missing, unknown, or already used",

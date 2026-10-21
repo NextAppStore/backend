@@ -31,7 +31,7 @@ router = APIRouter()
 # OIDC THIRD-PARTY INITIATED LOGIN
 # ----------------------------------------------------------------
 @router.api_route("/login", methods=["GET", "POST"])
-async def lti_login(request: Request):
+async def lti_login(request: Request, db: Session = Depends(get_db)):
     """Receives the OIDC login-initiation request from Moodle and redirects
     back to the platform's own auth endpoint with a freshly generated
     state/nonce pair (verified again on ``/lti/launch``)."""
@@ -55,7 +55,7 @@ async def lti_login(request: Request):
 
     redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/lti/launch"
 
-    state, nonce = create_login_attempt()
+    state, nonce = create_login_attempt(db)
     redirect_target = build_platform_auth_redirect(
         issuer=iss,
         login_hint=login_hint,
@@ -86,7 +86,7 @@ async def lti_launch(request: Request, db: Session = Depends(get_db)):
             detail="LTI launch missing id_token or state",
         )
 
-    claims = verify_lti_launch(id_token, state=state)
+    claims = verify_lti_launch(id_token, state=state, db=db)
     user = sync_user_from_lti(db, claims)
     session_token = create_lti_session_token(user)
 
