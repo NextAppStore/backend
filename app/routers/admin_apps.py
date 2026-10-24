@@ -69,8 +69,8 @@ def approve_version(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "message": (
-                        "Version kann nicht approved werden — fehlerhafte "
-                        "@openstack-Marker in den Variablen-Dateien"
+                        "Version cannot be approved — faulty "
+                        "@openstack markers in the variable files"
                     ),
                     "marker_errors": marker_errors,
                 },

@@ -20,6 +20,7 @@ from app.crud import openstack_credentials as crud_openstack_credentials
 from app.crud import teams as crud_teams
 from app.crud import users as crud_users
 from app.database import get_db
+from app.i18n import Locale, get_current_locale, t
 from app.models import Deployment, TaskStatus, TaskType, User, UserRole
 from app.models import Task as TaskModel  # for ad-hoc state queries
 from app.schemas import (
@@ -2032,6 +2033,9 @@ async def stream_deployment_events(
     initial_status = latest_task.status if latest_task else None
 
     deployment_id_str = str(deployment_id)
+    # Read the request language now: the generator below runs while the
+    # response is streamed, outside the endpoint's own call frame.
+    locale = get_current_locale()
 
     async def event_stream() -> AsyncIterator[bytes]:
         queue = pubsub.subscribe(deployment_id_str)
@@ -2047,7 +2051,7 @@ async def stream_deployment_events(
             # their latest values before the live loop starts.
             for past_event in pubsub.recent(deployment_id_str):
                 event_name = _event_name_for(past_event.get("type"))
-                yield _sse_frame(event_name, past_event)
+                yield _sse_frame(event_name, _localize_event(past_event, locale))
 
             # If the task is already in a terminal state we still yield
             # the snapshot but close the stream right away — no live
@@ -2068,7 +2072,7 @@ async def stream_deployment_events(
                     continue
 
                 event_name = _event_name_for(event.get("type"))
-                yield _sse_frame(event_name, event)
+                yield _sse_frame(event_name, _localize_event(event, locale))
 
                 # Stop streaming once the parent task reaches a
                 # terminal state. The lifecycle events (succeeded /
@@ -2114,6 +2118,17 @@ def _event_name_for(celery_event_type: str | None) -> str:
     single source of truth on both sides of the wire.
     """
     return _EVENT_NAME_MAP.get(celery_event_type or "", "message")
+
+
+def _localize_event(event: dict, locale: Locale) -> dict:
+    """Put the texts the backend itself puts into stream events into ``locale``.
+
+    Only ``task-overflow`` carries such a text (written by the pubsub, which
+    has no request). Worker log lines are passed through untouched.
+    """
+    if event.get("type") == "task-overflow":
+        return {**event, "message": t("sse.overflow", locale)}
+    return event
 
 
 def _sse_frame(event_name: str, payload: dict) -> bytes:

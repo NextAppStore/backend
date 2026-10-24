@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.crud import deployments as crud_deployments
+from app.i18n import Locale, t
 from app.models import App, Deployment, Team, User
 from app.services import email_service
 from app.utils.keycloak_auth import refresh_user_from_keycloak
@@ -322,6 +323,7 @@ def _send_user_mail(
     deployment: Deployment,
     app: App,
     access: dict[str, Any],
+    locale: Locale | None = None,
 ) -> None:
     # Re-pull from Keycloak immediately before composing the mail.
     # The DB row may have been written minutes (or longer) ago when
@@ -360,9 +362,9 @@ def _send_user_mail(
     }
     email_service.send_email(
         to=user.email,
-        subject=f"[{deployment.name}] Your access details",
-        html_body=email_service.render("user_invite.html", **ctx),
-        text_body=email_service.render("user_invite.txt", **ctx),
+        subject=f"[{deployment.name}] " + t("mail.user_subject", locale),
+        html_body=email_service.render("user_invite.html", locale, **ctx),
+        text_body=email_service.render("user_invite.txt", locale, **ctx),
     )
 
 
@@ -373,6 +375,7 @@ def _send_owner_mail(
     deployment: Deployment,
     app: App,
     teams_payload: list[dict[str, Any]],
+    locale: Locale | None = None,
 ) -> None:
     # Same refresh contract as ``_send_user_mail`` — the owner of a
     # deployment is also a Keycloak user whose address may have
@@ -392,9 +395,9 @@ def _send_owner_mail(
     }
     email_service.send_email(
         to=owner.email,
-        subject=f"[{deployment.name}] Deployment summary",
-        html_body=email_service.render("owner_summary.html", **ctx),
-        text_body=email_service.render("owner_summary.txt", **ctx),
+        subject=f"[{deployment.name}] " + t("mail.owner_subject", locale),
+        html_body=email_service.render("owner_summary.html", locale, **ctx),
+        text_body=email_service.render("owner_summary.txt", locale, **ctx),
     )
 
 
@@ -402,9 +405,13 @@ def notify_deployment_succeeded(
     db: Session,
     deployment_id: UUID,
     terraform_outputs: dict[str, Any] | None,
+    locale: Locale | None = None,
 ) -> None:
     """Top-level entry point — call from the celery event listener
     after a successful DEPLOY task.
+
+    ``locale`` is the language of the request that started the deploy
+    (``Task.locale``); there is no request here to read it from.
 
     Loads the deployment with all relations, walks its teams, and
     sends one mail per user plus one summary mail to the owner.
@@ -481,6 +488,7 @@ def notify_deployment_succeeded(
                     deployment=deployment,
                     app=app,
                     access=access,
+                    locale=locale,
                 )
             except Exception as e:
                 logger.warning(
@@ -503,6 +511,7 @@ def notify_deployment_succeeded(
             deployment=deployment,
             app=app,
             teams_payload=teams_payload,
+            locale=locale,
         )
     except Exception as e:
         logger.warning(
@@ -525,6 +534,7 @@ def resend_user_access(
     deployment_id: UUID,
     team_id: UUID,
     user_id: UUID,
+    locale: Locale | None = None,
 ) -> bool:
     """Re-send the access mail for one specific user of a deployment.
 
@@ -590,6 +600,7 @@ def resend_user_access(
             deployment=deployment,
             app=app,
             access=access,
+            locale=locale,
         )
         return True
     except Exception as e:

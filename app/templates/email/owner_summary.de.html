@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Deployment-Zusammenfassung — {{ deployment.name }}{% endblock %}
+{% block content %}
+<h1>Deployment-Zusammenfassung</h1>
+
+<p>Hallo <strong>{{ owner_display_name }}</strong>,</p>
+
+<p>
+  Dein Deployment <strong>{{ deployment.name }}</strong>
+  ({{ deployment.app_name }}) wurde erfolgreich abgeschlossen.
+  Unten findest du die vollständige Übersicht aller Teams und der
+  Zugangsdaten, die jedem Benutzer ausgestellt wurden. Jeder Benutzer hat
+  außerdem eine eigene Zugangsmail erhalten; diese Kopie ist für deine
+  Unterlagen.
+</p>
+
+<p>
+  <a class="button" href="{{ detail_url }}">In Click-n-Deploy öffnen</a>
+</p>
+
+{% for team in teams %}
+<h2>Team — {{ team.name }}</h2>
+
+{% if team.vm %}
+<table class="card" role="presentation" cellpadding="0" cellspacing="0">
+  <tr>
+    <th colspan="2">VM</th>
+  </tr>
+  {% if team.vm.url %}
+  <tr>
+    <td>URL</td>
+    <td><a href="{{ team.vm.url }}">{{ team.vm.url }}</a></td>
+  </tr>
+  {% endif %}
+  {% if team.vm.floating_ip %}
+  <tr>
+    <td>Floating-IP</td>
+    <td><code>{{ team.vm.floating_ip }}</code></td>
+  </tr>
+  {% endif %}
+  {% if team.vm.fixed_ip %}
+  <tr>
+    <td>Feste IP</td>
+    <td><code>{{ team.vm.fixed_ip }}</code></td>
+  </tr>
+  {% endif %}
+  {% for ip in team.vm.ips if ip not in [team.vm.fixed_ip, team.vm.floating_ip] %}
+  <tr>
+    <td>IP</td>
+    <td><code>{{ ip }}</code></td>
+  </tr>
+  {% endfor %}
+  {% if team.vm.instance_name %}
+  <tr>
+    <td>Instanz</td>
+    <td><code>{{ team.vm.instance_name }}</code></td>
+  </tr>
+  {% endif %}
+</table>
+{% endif %}
+
+<h3>Mitglieder</h3>
+<table class="list" role="presentation" cellpadding="0" cellspacing="0">
+  <tr>
+    <th>Name</th>
+    <th>E-Mail</th>
+    <th>Login</th>
+    {#
+      Last column header switches with the team's auth-type if all
+      members share one. Mixed teams (rare — same template, same
+      output contract) fall back to the generic "Zugangsdaten" label.
+    #}
+    <th>{% if team.auth_label %}{{ team.auth_label }}{% else %}Zugangsdaten{% endif %}</th>
+  </tr>
+  {% for member in team.members %}
+  <tr>
+    <td>{{ member.display_name }}</td>
+    <td><a href="mailto:{{ member.user.email }}">{{ member.user.email }}</a></td>
+    <td><code>{{ member.access.username }}</code></td>
+    <td>
+      {% if member.access.auth_type == "password" and member.access.password %}
+        <code>{{ member.access.password }}</code>
+      {% elif member.access.auth_type == "ssh_key" and member.access.auth_value %}
+        <code>{{ member.access.auth_value }}</code>
+      {% elif member.access.auth_type == "oauth" and member.access.auth_value %}
+        <a href="{{ member.access.auth_value }}">Anmeldung</a>
+      {% elif member.access.auth_type == "none" %}
+        <span class="muted">offener Zugang</span>
+      {% else %}
+        <span class="muted">—</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endfor %}
+
+<p class="muted">
+  Deployt aus <code>{{ deployment.git_url }}</code> mit dem Tag
+  <code>{{ deployment.release_tag }}</code>.
+</p>
+{% endblock %}

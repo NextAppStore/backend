@@ -32,9 +32,11 @@ from app.celery_app import celery_app
 from app.crud import deployments as crud_deployments
 from app.crud import tasks as crud_tasks
 from app.database import SessionLocal
+from app.i18n import Locale, t
 from app.models import TaskStatus, TaskType
 from app.services import deployment_notifier
 from app.services.deployment_pubsub import pubsub
+from app.utils.task_logs import FAILURE_DETAIL_DIVIDER, FAILURE_PREFIX
 from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
@@ -142,47 +144,21 @@ def _get_icon(level: str) -> str:
 
 
 # Mapping from common Celery infrastructure exception class names to
-# operator-friendly headlines. Keys are matched as substrings against
+# operator-friendly headlines (message keys in ``app/i18n/catalog.py``). Needles are matched as substrings against
 # the raw ``event['exception']`` repr. Each headline is paired with a
 # stable ``failure_kind`` token for the frontend.
 _CELERY_INFRA_EXCEPTIONS: tuple[tuple[str, str, str], ...] = (
-    (
-        "NotRegistered",
-        "Worker hat den Task-Typ nicht erkannt — Backend und Worker sind "
-        "nicht synchron. Bitte den Administrator informieren; das Deployment "
-        "selbst läuft weiter.",
-        "celery_infrastructure",
-    ),
-    (
-        "WorkerLostError",
-        "Der Worker-Prozess wurde während der Ausführung beendet. Der Task "
-        "wird ggf. automatisch neu gestartet — bitte den Status in Kürze "
-        "erneut prüfen.",
-        "celery_infrastructure",
-    ),
-    (
-        "TimeoutError",
-        "Der Task hat das Zeit-Limit überschritten. Wenn das wiederholt "
-        "passiert, ist meist die OpenStack-Region überlastet.",
-        "celery_infrastructure",
-    ),
-    (
-        "Reject",
-        "Der Worker hat den Task abgelehnt — wahrscheinlich ein "
-        "Routing- oder Konfigurationsproblem auf der Plattform.",
-        "celery_infrastructure",
-    ),
-    (
-        "ContentDisallowed",
-        "Der Task konnte nicht deserialisiert werden. Das ist ein "
-        "Plattform-Bug — bitte den Administrator informieren.",
-        "celery_infrastructure",
-    ),
+    ("NotRegistered", "celery.not_registered", "celery_infrastructure"),
+    ("WorkerLostError", "celery.worker_lost", "celery_infrastructure"),
+    ("TimeoutError", "celery.timeout", "celery_infrastructure"),
+    ("Reject", "celery.reject", "celery_infrastructure"),
+    ("ContentDisallowed", "celery.content_disallowed", "celery_infrastructure"),
 )
 
 
 def _translate_celery_infra_exception(
     exception_repr: str,
+    locale: Locale | None = None,
 ) -> tuple[str | None, str | None]:
     """Pick a human-readable headline + failure_kind for known Celery
     infrastructure exceptions.
@@ -192,9 +168,9 @@ def _translate_celery_infra_exception(
     """
     if not exception_repr:
         return (None, None)
-    for needle, headline, kind in _CELERY_INFRA_EXCEPTIONS:
+    for needle, message_key, kind in _CELERY_INFRA_EXCEPTIONS:
         if needle in exception_repr:
-            return (headline, kind)
+            return (t(message_key, locale), kind)
     return (None, None)
 
 
@@ -344,7 +320,9 @@ def _parse_structured_failure(exception_type: Any, traceback: str) -> dict | Non
     return None
 
 
-def _apply_structured_failure(update_data: dict, failure_data: dict) -> None:
+def _apply_structured_failure(
+    update_data: dict, failure_data: dict, locale: Locale | None = None
+) -> None:
     """Fold the parsed worker ``Failure`` payload into ``update_data``.
 
     Mutates ``update_data`` in place: normalizes logs, appends the error
@@ -357,7 +335,9 @@ def _apply_structured_failure(update_data: dict, failure_data: dict) -> None:
     # error
     if 'error' in failure_data:
         current_logs = update_data.get('logs', '') or ''
-        update_data['logs'] = current_logs + f"\n\n[err] Error: {failure_data['error']}"
+        update_data['logs'] = current_logs + "\n\n[err] " + t(
+            "log.error_line", locale, error=failure_data['error']
+        )
     # tf_state
     if 'tf_state' in failure_data:
         update_data['tf_state'] = failure_data['tf_state']
@@ -365,9 +345,13 @@ def _apply_structured_failure(update_data: dict, failure_data: dict) -> None:
     if 'commit_info' in failure_data and failure_data['commit_info']:
         commit = failure_data['commit_info']
         if isinstance(commit, dict):
-            commit_str = f"\nCommit: {commit.get('hash', 'N/A')[:8]}"
-            commit_str += f"\n   Message: {commit.get('message', 'N/A')}"
-            commit_str += f"\n   Author: {commit.get('author', 'N/A')}"
+            commit_str = t(
+                "log.commit_info",
+                locale,
+                hash=commit.get('hash', 'N/A')[:8],
+                message=commit.get('message', 'N/A'),
+                author=commit.get('author', 'N/A'),
+            )
             current_logs = update_data.get('logs', '') or ''
             update_data['logs'] = current_logs + commit_str
     # terraform_outputs
@@ -380,7 +364,7 @@ def _apply_structured_failure(update_data: dict, failure_data: dict) -> None:
 
 
 def _apply_infra_failure(
-    update_data: dict, exception_type: Any, traceback: str
+    update_data: dict, exception_type: Any, traceback: str, locale: Locale | None = None
 ) -> str | None:
     """Render an infrastructure-level failure into ``update_data['logs']``.
 
@@ -391,21 +375,25 @@ def _apply_infra_failure(
     ``failure_kind`` (or ``None``).
     """
     headline, kind = _translate_celery_infra_exception(
-        str(exception_type or '')
+        str(exception_type or ''), locale
     )
     raw_block = f"{exception_type}\n{traceback}".strip()
     if headline:
         # Divider so the frontend can split headline from raw details.
+        # NOT translated: ``useDeploymentTasks.ts`` splits on this exact
+        # string, and ``Task failed:`` below is matched the same way.
         update_data['logs'] = (
             f"{headline}\n\n"
-            f"--- Technische Details ---\n{raw_block}"
+            f"{FAILURE_DETAIL_DIVIDER}\n{raw_block}"
         )
     else:
-        update_data['logs'] = f"Task failed: {raw_block}"
+        update_data['logs'] = f"{FAILURE_PREFIX} {raw_block}"
     return kind
 
 
-def _handle_task_failed(celery_task_id: str, event: dict) -> tuple[dict, str | None]:
+def _handle_task_failed(
+    celery_task_id: str, event: dict, locale: Locale | None = None
+) -> tuple[dict, str | None]:
     """Build the update payload for a ``task-failed`` event.
 
     Classifies the failure (structured ``worker_failure`` vs.
@@ -429,13 +417,13 @@ def _handle_task_failed(celery_task_id: str, event: dict) -> tuple[dict, str | N
             # Structured worker-side failure (tofu apply, packer
             # build, etc.).
             failure_kind = "worker_failure"
-            _apply_structured_failure(update_data, failure_data)
+            _apply_structured_failure(update_data, failure_data, locale)
             logger.info(f"[FAILED] Extracted structured failure data for {celery_task_id}: {update_data}")
         else:
             raise ValueError("Not structured failure format")
     except Exception as parse_error:
         logger.warning(f"Could not parse structured failure: {parse_error}")
-        failure_kind = _apply_infra_failure(update_data, exception_type, traceback)
+        failure_kind = _apply_infra_failure(update_data, exception_type, traceback, locale)
     logger.info(f"[FAILED] Update data for {celery_task_id}: {update_data}")
     return update_data, failure_kind
 
@@ -481,6 +469,7 @@ def _notify_deploy_succeeded(db: Session, task, outputs: Any) -> None:
             db,
             task.deploymentId,
             terraform_outputs=outputs if isinstance(outputs, dict) else None,
+            locale=task.locale,
         )
     except Exception as e:
         logger.warning(
@@ -545,7 +534,9 @@ def _handle_lifecycle_event(event: dict, event_type: str, celery_task_id: str) -
         elif event_type == 'task-succeeded':
             update_data, outputs = _handle_task_succeeded(celery_task_id)
         elif event_type == 'task-failed':
-            update_data, failure_kind = _handle_task_failed(celery_task_id, event)
+            update_data, failure_kind = _handle_task_failed(
+                celery_task_id, event, task.locale
+            )
         elif event_type == 'task-revoked':
             update_data = _handle_task_revoked(celery_task_id)
 
