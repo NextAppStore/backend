@@ -6,6 +6,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import asdict
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -17,6 +18,7 @@ from app.crud import apps as crud_apps
 from app.crud import deployments as crud_deployments
 from app.crud import locks as crud_locks
 from app.crud import openstack_credentials as crud_openstack_credentials
+from app.crud import settings as crud_settings
 from app.crud import teams as crud_teams
 from app.crud import users as crud_users
 from app.database import get_db
@@ -583,6 +585,96 @@ def _attach_files_to_user_input(
     return base
 
 
+def _is_empty_network_value(val) -> bool:
+    if val is None:
+        return True
+    if isinstance(val, str):
+        return val == ""
+    return isinstance(val, (list, dict)) and len(val) == 0
+
+
+def _default_network_value(default_network: dict, vdef: dict) -> Any:
+    """Shape the admin-configured default to match one variable's
+    ``osMode``/``osMulti`` attributes (see ``_parse_one_variable`` in
+    ``app/routers/apps.py``)."""
+    mode = vdef.get("osMode") or "name"
+    scalar = default_network.get(mode) or default_network.get("id") or default_network.get("name")
+    return [scalar] if vdef.get("osMulti") else scalar
+
+
+def _expected_scope_slots(db: Session, teams_payload: list, scope: str) -> set[str]:
+    """The full set of valid slot keys for a ``team``/``user``-scoped
+    variable given the deployment's team roster — mirrors the slot
+    keys the wizard renders (team name, or ``TeamName-Username``)."""
+    slots: set[str] = set()
+    for team in teams_payload or []:
+        team_name = getattr(team, "name", None) or (
+            team.get("name") if isinstance(team, dict) else None
+        )
+        if not team_name:
+            continue
+        if scope == "team":
+            slots.add(team_name)
+            continue
+        user_ids = getattr(team, "userIds", None) or (
+            team.get("userIds") if isinstance(team, dict) else []
+        )
+        for user_id in user_ids or []:
+            user = crud_users.get_user(db, user_id)
+            if user:
+                slots.add(f"{team_name}-{user.username}")
+    return slots
+
+
+def _apply_default_network(
+    db: Session,
+    user_input_var: dict | None,
+    variable_definitions: list[dict],
+    teams_payload: list,
+    default_network: dict,
+) -> dict:
+    """Fill in the admin-configured default network for every
+    ``@openstack:network``-marked variable the user left empty.
+
+    Mirrors the map shapes ``_attach_files_to_user_input`` /
+    ``_validate_scoped_user_input`` expect: ``varScope == "all"`` (or
+    unscoped) is a flat scalar/list, ``team`` is one slot per team name,
+    ``user`` is one slot per ``TeamName-Username`` composite key. A
+    variable the user already filled (even partially, for scoped vars)
+    is left untouched — the default only covers slots that are
+    genuinely absent.
+    """
+    base = dict(user_input_var or {})
+    for source_key in ("terraform", "packer"):
+        block = dict(base.get(source_key) or {})
+        changed = False
+        for vdef in variable_definitions:
+            if vdef.get("source") != source_key or vdef.get("osType") != "network":
+                continue
+            var_name = vdef["name"]
+            scope = vdef.get("varScope")
+            value = _default_network_value(default_network, vdef)
+
+            if scope not in ("team", "user"):
+                if _is_empty_network_value(block.get(var_name)):
+                    block[var_name] = value
+                    changed = True
+                continue
+
+            # Scoped: fill in only the slots the user left empty.
+            existing = block.get(var_name)
+            slot_map = dict(existing) if isinstance(existing, dict) else {}
+            for slot in _expected_scope_slots(db, teams_payload, scope):
+                if _is_empty_network_value(slot_map.get(slot)):
+                    slot_map[slot] = value
+                    changed = True
+            if slot_map != existing:
+                block[var_name] = slot_map
+        if changed:
+            base[source_key] = block
+    return base
+
+
 def _validate_scoped_user_input(
     user_input_var: dict | None,
     variable_definitions: list[dict],
@@ -915,22 +1007,24 @@ def create_deployment(
     ensure_view_app(current_user, target_app, db=db)
 
     # Load the app author's variable declarations so we can enforce
-    # per-variable contracts (``varScope``, ``fileExtensions``) below.
-    # We only do this when the request actually carries variables /
-    # files — for a no-input deploy the round-trip into Git would be
-    # waste. Same parser as ``GET /apps/{id}/variables`` so client and
-    # server agree on which variable is scoped/file/free-text.
+    # per-variable contracts (``varScope``, ``fileExtensions``) below and
+    # so omitted ``@openstack:network``-marked variables can fall back to
+    # the admin-configured default (``_apply_default_network``). Always
+    # loaded now (previously only when userInputVar/files was non-empty)
+    # — an app whose only variable is the network one would otherwise
+    # never surface a definition to default against. Same parser as
+    # ``GET /apps/{id}/variables`` so client and server agree on which
+    # variable is scoped/file/free-text.
     variable_definitions: list[dict] = []
-    if deployment.userInputVar or deployment.files:
-        from app.routers.apps import load_variable_definitions
-        release_tag = deployment.releaseTag or "main"
-        try:
-            variable_definitions = load_variable_definitions(target_app, release_tag)
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
-                raise
-            # 400 (no git_link) or 500 (git unreachable) — skip validation,
-            # proceed without variable definitions.
+    from app.routers.apps import load_variable_definitions
+    release_tag = deployment.releaseTag or "main"
+    try:
+        variable_definitions = load_variable_definitions(target_app, release_tag)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+            raise
+        # 400 (no git_link) or 500 (git unreachable) — skip validation,
+        # proceed without variable definitions.
 
     # Fold the wizard's parallel ``files`` upload into
     # ``userInputVar.terraform`` before the row gets persisted, so the
@@ -943,6 +1037,21 @@ def create_deployment(
     deployment.userInputVar = _attach_files_to_user_input(
         deployment.userInputVar, deployment.files, variable_definitions or None,
     )
+
+    # Fall back to the admin-configured default network for any
+    # ``@openstack:network``-marked variable the user left empty. Must
+    # run before ``_validate_scoped_user_input`` so injected team/user
+    # slots are covered by the same shape checks as user-submitted ones.
+    if variable_definitions:
+        default_network = crud_settings.get_setting_value(db, "default_network")
+        if default_network:
+            deployment.userInputVar = _apply_default_network(
+                db,
+                deployment.userInputVar,
+                variable_definitions,
+                deployment.teams or [],
+                default_network,
+            )
 
     # Enforce ``varScope = team|user`` contracts: each value must be a
     # map whose keys match the deployment's team / user roster. This
