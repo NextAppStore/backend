@@ -438,6 +438,7 @@ class CourseTeacher(Base):
 
     # Relationships
     course = relationship("Course", back_populates="course_teachers")
+    user = relationship("User", back_populates="course_teacher_links")
 
 
 # ----------------------------------------------------------------
@@ -456,4 +457,3 @@ class Setting(Base):
     )
 
     updater = relationship("User", foreign_keys=[updated_by])
-    user = relationship("User", back_populates="course_teacher_links")
