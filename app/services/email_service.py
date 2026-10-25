@@ -40,9 +40,11 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound, pass_context, select_autoescape
 
 from app.config import settings
+from app.i18n import Locale, get_current_locale
+from app.i18n import t as translate
 
 logger = logging.getLogger(__name__)
 
@@ -88,15 +90,37 @@ _jinja_html.filters["endpoint"] = format_endpoint
 _jinja_text.filters["endpoint"] = format_endpoint
 
 
-def render(template_name: str, **context: Any) -> str:
+@pass_context
+def _template_t(context: Any, key: str, **params: Any) -> str:
+    """``{{ t("mail.footer") }}`` — catalog text in the language being rendered."""
+    return translate(key, context.get("locale"), **params)
+
+
+_jinja_html.globals["t"] = _template_t
+_jinja_text.globals["t"] = _template_t
+
+
+def render(template_name: str, locale: Locale | None = None, **context: Any) -> str:
     """Render a Jinja2 template with the given context.
 
     Picks the HTML or text environment based on the template's
     extension so plain-text templates aren't HTML-escaped and
     HTML templates still get tidy whitespace.
+
+    ``user_invite.html`` is rendered from ``user_invite.<locale>.html``
+    (``de``/``en``); a template without a language variant is used as is.
+    ``locale`` defaults to the language of the current request.
     """
+    locale = locale or get_current_locale()
     env = _jinja_text if template_name.endswith(".txt") else _jinja_html
-    return env.get_template(template_name).render(**context)
+    stem, dot, ext = template_name.rpartition(".")
+    try:
+        template = env.get_template(f"{stem}.{locale}.{ext}") if dot else None
+    except TemplateNotFound:
+        template = None
+    if template is None:
+        template = env.get_template(template_name)
+    return template.render(locale=locale, **context)
 
 
 def is_smtp_enabled() -> bool:

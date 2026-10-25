@@ -1,0 +1,39 @@
+Dein Zugang für {{ deployment.name }}
+{{ "=" * (deployment.name|length + 16) }}
+
+Hallo {{ user_display_name }},
+
+Dein Deployment "{{ deployment.name }}" ({{ deployment.app_name }}) läuft.
+Hier sind deine persönlichen Zugangsdaten — bitte gib sie nicht an
+Personen außerhalb deines Teams weiter.
+
+ZUGANG
+------
+{% if access.url %}URL:       {{ access.url }}
+{% endif -%}
+{% for ip in access.ips or ([access.ip] if access.ip else []) %}IP:        {{ ip | endpoint(access.port) }}
+{% endfor -%}
+Benutzer:  {{ access.username }}
+{# Auth rendering branches on ``access.auth_type``. Default
+   (``password``) prints the password line; other types use a
+   type-specific label. ``none`` skips the credential line entirely
+   so the mail just ships URL/IP. #}
+{%- if access.auth_type == "password" and access.password %}
+Passwort:  {{ access.password }}
+{% elif access.auth_type == "ssh_key" and access.auth_value %}
+SSH-Key:   {{ access.auth_value }}
+{% elif access.auth_type == "oauth" and access.auth_value %}
+Login:     {{ access.auth_value }}
+(Melde dich mit deinem externen Konto an — es wird kein Passwort gespeichert.)
+{% elif access.auth_type == "none" %}
+(Keine Anmeldung erforderlich — das Deployment ist offen zugänglich.)
+{%- endif %}
+{% if teammates %}
+TEAM — {{ team_name }}
+{{ "-" * (team_name|length + 7) }}
+Du teilst dieses Deployment mit:
+{% for mate in teammates %}  - {{ mate.display_name }} <{{ mate.user.email }}>
+{% endfor -%}
+{% endif %}
+Deployt aus {{ deployment.git_url }} mit dem Tag {{ deployment.release_tag }}.
+Dein Login-Benutzername ist {{ user.username }}.

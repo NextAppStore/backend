@@ -31,6 +31,7 @@ from app.celery_app import celery_app
 from app.crud import locks as crud_locks
 from app.crud import tasks as crud_tasks
 from app.database import SessionLocal
+from app.i18n import Locale, t
 from app.models import Task, TaskStatus
 from app.utils.time import utcnow
 
@@ -141,7 +142,7 @@ def _reconcile_task(db: Session, task: Task) -> None:
             crud_tasks.update_task(db, task.taskId, {
                 "status": TaskStatus.FAILED,
                 "finished_at": now,
-                "logs": "Reconciler: Celery dispatch did not complete (no task id stamped)",
+                "logs": t("task.reconciler_no_dispatch", task.locale),
             })
         return
 
@@ -163,7 +164,7 @@ def _reconcile_task(db: Session, task: Task) -> None:
         crud_tasks.update_task(db, task.taskId, {
             "status": TaskStatus.FAILED,
             "finished_at": now,
-            "logs": _extract_failure_logs(async_result),
+            "logs": _extract_failure_logs(async_result, task.locale),
         })
         logger.info("Reconciled task %s -> FAILED", task.taskId)
 
@@ -193,7 +194,7 @@ def _reconcile_task(db: Session, task: Task) -> None:
             crud_tasks.update_task(db, task.taskId, {
                 "status": TaskStatus.FAILED,
                 "finished_at": now,
-                "logs": "Reconciler: task stuck in Celery PENDING beyond grace window",
+                "logs": t("task.reconciler_stuck_pending", task.locale),
             })
 
 
@@ -221,11 +222,11 @@ def _extract_success_payload(result):
     return logs_str, tf_state_str, outputs_str
 
 
-def _extract_failure_logs(async_result: AsyncResult) -> str:
+def _extract_failure_logs(async_result: AsyncResult, locale: Locale | None = None) -> str:
     try:
         info = async_result.info
         if isinstance(info, BaseException):
             return f"Task failed: {type(info).__name__}: {str(info)[:500]}"
         return f"Task failed: {str(info)[:500]}"
     except Exception:
-        return "Task failed (reconciler could not retrieve traceback)"
+        return t("task.reconciler_no_traceback", locale)

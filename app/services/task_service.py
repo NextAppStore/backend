@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.crud import tasks as crud_tasks
+from app.i18n import get_current_locale, t
 from app.models import Task, TaskStatus, TaskType
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ def prepare_task_in_tx(
         type=task_type,
         status=TaskStatus.PENDING,
         celeryTaskId=None,
+        # Language of the triggering request; later texts that have no
+        # request context (reconciler, mails) use it.
+        locale=get_current_locale(),
     )
     db.add(db_task)
     try:
@@ -102,7 +106,16 @@ def dispatch_to_celery(
     exception is re-raised — the caller turns that into a 503.
     """
     try:
-        result = celery_app.send_task(celery_task_name, args=celery_args)
+        # The language travels as a message header, not as an argument: a
+        # worker that does not know about it ignores unknown headers (an
+        # extra positional arg would make it fail with a TypeError), so the
+        # backend can be rolled out before the worker. A worker that does
+        # care reads it from ``self.request`` (``bind=True`` tasks).
+        result = celery_app.send_task(
+            celery_task_name,
+            args=celery_args,
+            headers={"locale": task.locale or get_current_locale()},
+        )
     except Exception:
         logger.exception(
             "Celery dispatch failed for task %s (deployment %s)",
@@ -110,7 +123,7 @@ def dispatch_to_celery(
             task.deploymentId,
         )
         task.status = TaskStatus.FAILED
-        task.logs = "Failed to dispatch to Celery"
+        task.logs = t("task.dispatch_failed", task.locale)
         db.commit()
         db.refresh(task)
         raise

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.crud import app_version_approvals as crud_approvals
 from app.crud import apps as crud_apps
 from app.database import get_db
+from app.i18n import t
 from app.models import User, UserRole
 from app.schemas import (
     AppCreate,
@@ -305,11 +306,10 @@ def _parse_var_scope(var_name: str, slot: str | None) -> str | None:
     if rs in _VAR_SCOPES:
         return rs
     suggestion = _closest_match(rs, _VAR_SCOPES)
-    hint = f"; meintest du '{suggestion}'?" if suggestion else ""
+    hint = t("marker.did_you_mean", suggestion=suggestion) if suggestion else ""
     raise MarkerError(
         var_name,
-        f"ungültiger var_scope '{slot}'{hint} — erwartet "
-        f"{sorted(_VAR_SCOPES)}",
+        t("marker.invalid_var_scope", slot=slot, hint=hint, expected=sorted(_VAR_SCOPES)),
         code="MARKER_INVALID_VAR_SCOPE",
     )
 
@@ -324,10 +324,7 @@ def _forbid_packer_team_user_scope(var_name: str, source: str, var_scope: str | 
     if source == "packer" and var_scope in ("team", "user"):
         raise MarkerError(
             var_name,
-            f"packer-Variablen unterstützen nur ``var_scope = all``; "
-            f"angegeben: '{var_scope}'. Begründung: Packer baut EIN "
-            f"Image, das von allen späteren VMs/Teams/Usern geteilt "
-            f"wird — ein Per-Team-Wert hätte keine Wirkung.",
+            t("marker.packer_scope_forbidden", scope=var_scope),
             code="MARKER_PACKER_SCOPE_FORBIDDEN",
         )
 
@@ -345,8 +342,7 @@ def _reject_malformed_markers(var_name: str, description: str) -> None:
     if _TOO_MANY_SEGMENTS_RE.search(description):
         raise MarkerError(
             var_name,
-            "marker hat zu viele Segmente — erlaubt: "
-            "@openstack:<type>[:<mode>][:<multi>][:<var_scope>]",
+            t("marker.too_many_segments"),
             code="MARKER_TOO_MANY_SEGMENTS",
         )
 
@@ -358,10 +354,7 @@ def _reject_malformed_markers(var_name: str, description: str) -> None:
         if _BAD_PREFIX_RE.search(description):
             raise MarkerError(
                 var_name,
-                "marker konnte nicht geparst werden — erlaubt ist nur "
-                "``@openstack:<type>[:<mode>][:<multi>][:<var_scope>]`` mit "
-                "Doppelpunkten als Trenner und ohne Whitespace zwischen "
-                "den Segmenten",
+                t("marker.unparseable"),
                 code="MARKER_UNPARSEABLE",
             )
         return
@@ -376,10 +369,7 @@ def _reject_malformed_markers(var_name: str, description: str) -> None:
         if _MARKER_WHITESPACE_CONT_RE.match(tail):
             raise MarkerError(
                 var_name,
-                "marker enthält Whitespace zwischen den Segmenten — "
-                "schreibe ihn ohne Leerzeichen (z.B. "
-                "``@openstack:flavor:id:multi`` statt "
-                "``@openstack:flavor :id :multi``)",
+                t("marker.whitespace"),
                 code="MARKER_WHITESPACE",
             )
 
@@ -392,10 +382,7 @@ def _reject_malformed_markers(var_name: str, description: str) -> None:
         if _MARKER_COMMA_CONT_RE.match(tail):
             raise MarkerError(
                 var_name,
-                "ungültiger Endungsfilter mit Komma — marker-Slots werden "
-                "mit ``|`` getrennt, nicht mit Komma (z.B. "
-                "``@openstack:file:all:pdf|docx`` statt "
-                "``@openstack:file:all:pdf,docx``)",
+                t("marker.extensions_comma"),
                 code="MARKER_FILE_INVALID_EXTENSIONS",
             )
 
@@ -426,11 +413,10 @@ def _select_marker(var_name: str, description: str):
     # There were markers, but all with unknown types. Hard-fail with a
     # hint pointing at the first — that is very likely the author's typo.
     raw_type, suggestion = first_unknown  # type: ignore[misc]
-    hint = f"; meintest du '{suggestion}'?" if suggestion else ""
+    hint = t("marker.did_you_mean", suggestion=suggestion) if suggestion else ""
     raise MarkerError(
         var_name,
-        f"unbekannter resource-type '{raw_type}'{hint} — "
-        f"erwartet: {sorted(_OS_TYPES)}",
+        t("marker.unknown_os_type", raw_type=raw_type, hint=hint, expected=sorted(_OS_TYPES)),
         code="MARKER_UNKNOWN_OS_TYPE",
     )
 
@@ -452,18 +438,14 @@ def _parse_scope_only_marker(
     if len(candidates) > 1:
         raise MarkerError(
             var_name,
-            "leerer type-slot ist nur in Kombination mit ``var_scope`` "
-            "erlaubt (z.B. ``@openstack:::team``); mehrere belegte "
-            "Slots sind hier nicht zulässig",
+            t("marker.empty_type_ambiguous"),
             code="MARKER_EMPTY_TYPE_AMBIGUOUS",
         )
     var_scope = _parse_var_scope(var_name, candidates[0] if candidates else None)
     if var_scope is None:
         raise MarkerError(
             var_name,
-            "leerer Marker — entweder einen resource-type angeben "
-            "(z.B. ``@openstack:flavor``) oder einen var_scope "
-            "(z.B. ``@openstack:::team``)",
+            t("marker.empty"),
             code="MARKER_EMPTY",
         )
     _forbid_packer_team_user_scope(var_name, source, var_scope)
@@ -487,9 +469,7 @@ def _parse_file_marker(
         # marker error.
         raise MarkerError(
             var_name,
-            "``@openstack:file`` ist in Packer-Variablen nicht "
-            "unterstützt — Dateien werden ausschließlich im "
-            "OpenTofu-Pfad zugestellt",
+            t("marker.file_packer_forbidden"),
             code="MARKER_FILE_PACKER_FORBIDDEN",
         )
 
@@ -500,11 +480,10 @@ def _parse_file_marker(
             file_scope = rs
         else:
             scope_suggestion = _closest_match(rs, _FILE_SCOPES)
-            hint = f"; meintest du '{scope_suggestion}'?" if scope_suggestion else ""
+            hint = t("marker.did_you_mean", suggestion=scope_suggestion) if scope_suggestion else ""
             raise MarkerError(
                 var_name,
-                f"ungültiger file-scope '{raw_mode}'{hint} — erwartet "
-                f"{sorted(_FILE_SCOPES)}",
+                t("marker.invalid_file_scope", raw_mode=raw_mode, hint=hint, expected=sorted(_FILE_SCOPES)),
                 code="MARKER_INVALID_FILE_SCOPE",
             )
 
@@ -523,9 +502,7 @@ def _parse_file_marker(
         if raw_scope not in (None, ""):
             raise MarkerError(
                 var_name,
-                f"@openstack:file akzeptiert keinen fünften Slot "
-                f"(angegeben: '{raw_scope}') — der Scope steht im "
-                f"dritten Slot (z.B. ``@openstack:file:user:pdf``)",
+                t("marker.file_extra_slot", raw_scope=raw_scope),
                 code="MARKER_FILE_EXTRA_SLOT",
             )
     elif raw_scope not in (None, ""):
@@ -533,18 +510,14 @@ def _parse_file_marker(
     if exts_slot is None:
         raise MarkerError(
             var_name,
-            "``@openstack:file`` braucht einen Endungsfilter im "
-            "vierten Slot, z.B. ``@openstack:file:all:pdf`` oder "
-            "``@openstack:file:user:pdf|docx``",
+            t("marker.file_missing_extensions"),
             code="MARKER_FILE_MISSING_EXTENSIONS",
         )
     exts_raw = exts_slot.lower()
     if not _FILE_EXTENSIONS_RE.match(exts_raw):
         raise MarkerError(
             var_name,
-            f"ungültiger Endungsfilter '{exts_slot}' — erlaubt sind "
-            f"alphanumerische Endungen, mehrere getrennt mit '|' "
-            f"(z.B. ``pdf|docx``)",
+            t("marker.file_invalid_extensions", exts=exts_slot),
             code="MARKER_FILE_INVALID_EXTENSIONS",
         )
     file_exts = exts_raw.split("|")
@@ -575,9 +548,7 @@ def _parse_marker_mode(var_name: str, os_type: str, raw_mode: str | None) -> str
         # mode" message, show the correct marker.
         raise MarkerError(
             var_name,
-            f"'{raw_mode}' ist ein multi-Flag, nicht ein Mode — "
-            f"schreibe den Marker mit leerem Mode-Slot, z.B. "
-            f"``@openstack:{os_type}::{rm}``",
+            t("marker.multi_in_mode_slot", raw_mode=raw_mode, os_type=os_type, flag=rm),
             code="MARKER_MULTI_IN_MODE_SLOT",
         )
     if rm in _VAR_SCOPES:
@@ -588,16 +559,14 @@ def _parse_marker_mode(var_name: str, os_type: str, raw_mode: str | None) -> str
         # mode" message, show the correct marker.
         raise MarkerError(
             var_name,
-            f"'{raw_mode}' ist ein var_scope, nicht ein Mode — "
-            f"schreibe den Marker mit leerem Mode-/Multi-Slot, z.B. "
-            f"``@openstack:{os_type}:::{rm}``",
+            t("marker.scope_in_mode_slot", raw_mode=raw_mode, os_type=os_type, scope=rm),
             code="MARKER_SCOPE_IN_MODE_SLOT",
         )
     mode_suggestion = _closest_match(rm, {"id", "name"})
-    hint = f"; meintest du '{mode_suggestion}'?" if mode_suggestion else ""
+    hint = t("marker.did_you_mean", suggestion=mode_suggestion) if mode_suggestion else ""
     raise MarkerError(
         var_name,
-        f"ungültiger mode '{raw_mode}'{hint} — erwartet 'id' oder 'name'",
+        t("marker.invalid_mode", raw_mode=raw_mode, hint=hint),
         code="MARKER_INVALID_MODE",
     )
 
@@ -617,11 +586,10 @@ def _parse_marker_multi(var_name: str, raw_multi: str | None) -> bool | None:
     if mm == "single":
         return False
     multi_suggestion = _closest_match(mm, {"multi", "list", "single"})
-    hint = f"; meintest du '{multi_suggestion}'?" if multi_suggestion else ""
+    hint = t("marker.did_you_mean", suggestion=multi_suggestion) if multi_suggestion else ""
     raise MarkerError(
         var_name,
-        f"ungültiger multi-Flag '{raw_multi}'{hint} — erwartet "
-        "'multi', 'list' oder 'single'",
+        t("marker.invalid_multi", raw_multi=raw_multi, hint=hint),
         code="MARKER_INVALID_MULTI",
     )
 
@@ -678,16 +646,13 @@ def _check_multi_type_conflict(
         # ``type = map(...)`` with ``:multi`` is clearly contradictory.
         raise MarkerError(
             var_name,
-            f"marker deklariert ':multi', aber HCL-Type ist '{var_type}' "
-            "— erlaubt sind nur ``string``, ``list(...)``, ``set(...)`` "
-            "und ``tuple(...)``",
+            t("marker.multi_type_conflict", var_type=var_type),
             code="MARKER_MULTI_TYPE_CONFLICT",
         )
     if multi is False and is_collection_type:
         raise MarkerError(
             var_name,
-            f"marker deklariert ':single', aber HCL-Type ist '{var_type}' "
-            "(eine list/set/tuple-Kollektion) — fixe einen der beiden",
+            t("marker.single_type_conflict", var_type=var_type),
             code="MARKER_SINGLE_TYPE_CONFLICT",
         )
 
@@ -852,17 +817,13 @@ def _validate_file_var_shape(var_name: str, var_type: str, scope: str) -> None:
     if scope == "all" and not type_normalised.startswith("map(object("):
         raise MarkerError(
             var_name,
-            f"marker ``@openstack:file:all`` erwartet HCL-Type "
-            f"``map(object({{name=string, content_b64=string, "
-            f"size=number, content_type=string}}))`` — angegeben: '{var_type}'",
+            t("marker.file_type_shape_all", var_type=var_type),
             code="MARKER_FILE_TYPE_SHAPE",
         )
     if scope in ("team", "user") and not type_normalised.startswith("map(map(object("):
         raise MarkerError(
             var_name,
-            f"marker ``@openstack:file:{scope}`` erwartet HCL-Type "
-            f"``map(map(object({{name=string, content_b64=string, "
-            f"size=number, content_type=string}})))`` — angegeben: '{var_type}'",
+            t("marker.file_type_shape_scoped", scope=scope, var_type=var_type),
             code="MARKER_FILE_TYPE_SHAPE",
         )
 
@@ -888,11 +849,7 @@ def _validate_scoped_var_shape(var_name: str, var_type: str, scope: str) -> None
     if not type_normalised.startswith("map(") and type_normalised not in ("map",):
         raise MarkerError(
             var_name,
-            f"marker deklariert ``var_scope = {scope}``, aber HCL-Type "
-            f"ist '{var_type}'. Pro Scope-Eintrag liefert der Wizard "
-            f"eine Map (slot_key → value), also muss der HCL-Type "
-            f"``map(...)`` sein — z.B. ``map(string)`` oder "
-            f"``map(list(string))``.",
+            t("marker.scoped_requires_map", scope=scope, var_type=var_type),
             code="MARKER_SCOPED_REQUIRES_MAP",
         )
 
@@ -1643,8 +1600,8 @@ def submit_version(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "message": (
-                        "Version kann nicht eingereicht werden — fehlerhafte "
-                        "@openstack-Marker in den Variablen-Dateien"
+                        "Version cannot be submitted — faulty "
+                        "@openstack markers in the variable files"
                     ),
                     "marker_errors": marker_errors,
                 },

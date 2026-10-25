@@ -6015,6 +6015,32 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "failure_headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Headline",
+            "description": "One-line summary when ``logs`` holds a failure text, else ``None``.\n\nSpares the client from searching ``logs`` for text markers.",
+            "readOnly": true
+          },
+          "failure_details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Details",
+            "description": "Technical part of the failure text (traceback, raw exception).",
+            "readOnly": true
           }
         },
         "type": "object",
@@ -6024,7 +6050,9 @@
           "type",
           "status",
           "taskId",
-          "created_at"
+          "created_at",
+          "failure_headline",
+          "failure_details"
         ],
         "title": "TaskResponse"
       },

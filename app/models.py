@@ -248,6 +248,10 @@ class Task(Base):
     # canonical; these let a page reload show the last known phase/pct.
     current_phase = Column(String(50), nullable=True)
     progress_pct = Column(Integer, nullable=True)
+    # UI language (``de``/``en``) of the request that started the task. The
+    # texts the backend writes later without a request (reconciler, mails,
+    # failure headlines) are rendered in this language.
+    locale = Column(String(2), nullable=False, default="de", server_default="de")
     created_at = Column(DateTime, default=utcnow)
 
     # Relationships

@@ -8,7 +8,7 @@
    Apple Mail, iOS Mail). When it isn't honoured, the content stays
    readable — just less pretty. #}
 <!DOCTYPE html>
-<html>
+<html lang="{{ locale }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -121,7 +121,7 @@
     {% block content %}{% endblock %}
   </div>
   <div class="footer">
-    Sent automatically by Click-n-Deploy. Do not reply.
+    {{ t("mail.footer") }}
   </div>
 </body>
 </html>

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Dein Zugang für {{ deployment.name }}{% endblock %}
+{% block content %}
+<h1>Deine Zugangsdaten</h1>
+
+<p>Hallo <strong>{{ user_display_name }}</strong>,</p>
+
+<p>
+  Dein Deployment <strong>{{ deployment.name }}</strong>
+  ({{ deployment.app_name }}) läuft. Hier sind deine persönlichen
+  Zugangsdaten — bitte gib sie nicht an Personen außerhalb deines Teams weiter.
+</p>
+
+<table class="card" role="presentation" cellpadding="0" cellspacing="0">
+  <tr>
+    <th colspan="2">Zugang</th>
+  </tr>
+  {% if access.url %}
+  <tr>
+    <td>URL</td>
+    <td><a href="{{ access.url }}">{{ access.url }}</a></td>
+  </tr>
+  {% endif %}
+  {% for ip in access.ips or ([access.ip] if access.ip else []) %}
+  <tr>
+    <td>IP</td>
+    <td><code>{{ ip | endpoint(access.port) }}</code></td>
+  </tr>
+  {% endfor %}
+  <tr>
+    <td>Benutzername</td>
+    <td><code>{{ access.username }}</code></td>
+  </tr>
+  {#
+    Auth rendering switches on ``access.auth_type``. Apps without a
+    password ship ``type = "ssh_key" | "oauth" | "none"`` and the
+    notifier passes the raw value through as ``auth_value``. ``none``
+    skips the credential row entirely so the mail just shows URL/IP.
+  #}
+  {% if access.auth_type == "password" and access.password %}
+  <tr>
+    <td>Passwort</td>
+    <td><code>{{ access.password }}</code></td>
+  </tr>
+  {% elif access.auth_type == "ssh_key" and access.auth_value %}
+  <tr>
+    <td>SSH-Schlüssel</td>
+    <td><code>{{ access.auth_value }}</code></td>
+  </tr>
+  {% elif access.auth_type == "oauth" and access.auth_value %}
+  <tr>
+    <td>Anmeldung</td>
+    <td>
+      <a href="{{ access.auth_value }}">{{ access.auth_value }}</a>
+      <br><span class="muted">Melde dich mit deinem externen Konto an — es wird kein Passwort gespeichert.</span>
+    </td>
+  </tr>
+  {% elif access.auth_type == "none" %}
+  <tr>
+    <td>Anmeldung</td>
+    <td><span class="muted">Keine Anmeldung erforderlich — offener Zugang.</span></td>
+  </tr>
+  {% endif %}
+</table>
+
+{% if teammates %}
+<h2>Dein Team — {{ team_name }}</h2>
+<p>Du teilst dieses Deployment mit:</p>
+<table class="list" role="presentation" cellpadding="0" cellspacing="0">
+  <tr>
+    <th>Name</th>
+    <th>E-Mail</th>
+  </tr>
+  {% for mate in teammates %}
+  <tr>
+    <td>{{ mate.display_name }}</td>
+    <td><a href="mailto:{{ mate.user.email }}">{{ mate.user.email }}</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<p class="muted">
+  Deployt aus <code>{{ deployment.git_url }}</code> mit dem Tag
+  <code>{{ deployment.release_tag }}</code>.
+  Dein Login-Benutzername ist <code>{{ user.username }}</code>.
+</p>
+{% endblock %}

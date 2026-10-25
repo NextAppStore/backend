@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, model_validator
 
 from app.models import (
     AppVersionApprovalStatus,
@@ -12,6 +12,7 @@ from app.models import (
     UserRole,
     VmTopology,
 )
+from app.utils.task_logs import split_failure_logs
 
 
 # ----------------------------------------------------------------
@@ -496,6 +497,21 @@ class TaskResponse(TaskBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failure_headline(self) -> str | None:
+        """One-line summary when ``logs`` holds a failure text, else ``None``.
+
+        Spares the client from searching ``logs`` for text markers.
+        """
+        return split_failure_logs(self.logs)[0]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failure_details(self) -> str | None:
+        """Technical part of the failure text (traceback, raw exception)."""
+        return split_failure_logs(self.logs)[1]
 
 
 # ----------------------------------------------------------------
