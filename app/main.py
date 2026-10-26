@@ -15,6 +15,7 @@ from app.i18n.handlers import localized_http_exception_handler
 from app.i18n.validation import localized_validation_handler
 from app.routers import (
     admin_apps,
+    admin_settings,
     apps,
     auth_keycloak,
     auth_lti,
@@ -140,6 +141,7 @@ app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(courses.router, prefix="/courses", tags=["Courses"])
 app.include_router(apps.router, prefix="/apps", tags=["Apps"])
 app.include_router(admin_apps.router, prefix="/admin", tags=["Admin"])
+app.include_router(admin_settings.router, prefix="/admin", tags=["Admin"])
 app.include_router(deployments.router, prefix="/deployments", tags=["Deployments"])
 app.include_router(tasks.router, prefix="/tasks", tags=["Tasks"])
 app.include_router(teams.router, prefix="/teams", tags=["Teams"])

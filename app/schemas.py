@@ -622,3 +622,25 @@ class OpenStackCredentialResponse(OpenStackCredentialBase):
     active_deployments: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ----------------------------------------------------------------
+# ADMIN SETTINGS SCHEMAS
+# ----------------------------------------------------------------
+class DefaultNetworkUpsert(BaseModel):
+    """Body of PUT /admin/settings/default-network."""
+    id: str = Field(..., min_length=1, description="OpenStack network ID (UUID)")
+    name: str = Field(..., min_length=1, description="OpenStack network name")
+    mode: Literal["id", "name"] = "id"
+
+
+class DefaultNetworkResponse(BaseModel):
+    """Always 200 — `configured=False` when no default has been set yet."""
+    configured: bool = False
+    id: str | None = None
+    name: str | None = None
+    mode: Literal["id", "name"] | None = None
+    updated_at: datetime | None = None
+    updated_by: UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)

@@ -443,3 +443,21 @@ class CourseTeacher(Base):
     # Relationships
     course = relationship("Course", back_populates="course_teachers")
     user = relationship("User", back_populates="course_teacher_links")
+
+
+# ----------------------------------------------------------------
+# SETTING MODEL (generic admin-editable global key-value settings)
+# ----------------------------------------------------------------
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)  # JSON-encoded
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.userId", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    updater = relationship("User", foreign_keys=[updated_by])
