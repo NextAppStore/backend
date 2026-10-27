@@ -2,13 +2,12 @@
 
 These tests run against a real Postgres so the partial unique index
 on ``tasks(deploymentId) WHERE status IN ('PENDING','RUNNING')`` and
-the per-user advisory locks can fire. The Celery dispatch is patched
-to a no-op so RabbitMQ isn't required.
+the per-user advisory locks can fire. A queued job is just a task row
+with a sealed payload; ``queued_jobs`` reads it back.
 """
 import json
 import uuid
 from datetime import datetime
-from unittest.mock import patch
 
 import pytest
 
@@ -53,7 +52,7 @@ def _make_deployment_with_creds(
     The credential row needs valid ciphertext so
     ``crud_openstack_credentials.get_dispatch_envelope`` doesn't 412
     before the dispatch path even runs. The cleartext doesn't matter
-    for these tests — Celery is patched out.
+    for these tests — no worker runs.
     """
     from app.utils import crypto
 
@@ -102,25 +101,11 @@ def _make_deployment_with_creds(
     return deployment
 
 
-@pytest.fixture
-def patched_celery():
-    """Replace Celery's ``send_task`` with a stub that returns a fake id.
-
-    The real path commits a task row before send_task runs, then stamps
-    the celery_task_id from the result. We only need a sentinel object
-    with an ``.id`` attribute.
-    """
-    class _FakeAsyncResult:
-        id = "fake-celery-task-id"
-
-    with patch("app.services.task_service.celery_app.send_task",
-               return_value=_FakeAsyncResult()) as m:
-        yield m
 
 
 @pytest.mark.integration
 def test_pause_dispatches_when_status_is_success(
-    client, db, mock_user, patched_celery,
+    client, db, mock_user, queued_jobs,
 ):
     deployment = _make_deployment_with_creds(
         db, mock_user,
@@ -143,9 +128,11 @@ def test_pause_dispatches_when_status_is_success(
         .one()
     )
     assert task.status == TaskStatus.PENDING
-    assert task.celeryTaskId == "fake-celery-task-id"
-    patched_celery.assert_called_once()
-    assert patched_celery.call_args.args[0] == "tasks.pause_deployment"
+    # Queued with a sealed payload for the worker.
+    [(queued, job)] = queued_jobs()
+    assert queued.taskId == task.taskId
+    assert job["app_id"] == str(deployment.appId)
+    assert "openstack_envelope" in job and "state_token" in job
 
 
 @pytest.mark.integration
@@ -166,7 +153,7 @@ def test_pause_dispatches_when_status_is_success(
     ],
 )
 def test_pause_rejected_when_not_success(
-    client, db, mock_user, patched_celery, task_type, task_status,
+    client, db, mock_user, queued_jobs, task_type, task_status,
 ):
     deployment = _make_deployment_with_creds(
         db, mock_user,
@@ -178,12 +165,12 @@ def test_pause_rejected_when_not_success(
         f"Pause must be rejected when last task is "
         f"({task_type.value}, {task_status.value})"
     )
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
 def test_resume_dispatches_when_status_is_paused(
-    client, db, mock_user, patched_celery,
+    client, db, mock_user, queued_jobs,
 ):
     deployment = _make_deployment_with_creds(
         db, mock_user,
@@ -204,12 +191,13 @@ def test_resume_dispatches_when_status_is_paused(
         .one()
     )
     assert task.status == TaskStatus.PENDING
-    assert patched_celery.call_args.args[0] == "tasks.resume_deployment"
+    [(queued, _job)] = queued_jobs()
+    assert queued.taskId == task.taskId
 
 
 @pytest.mark.integration
 def test_resume_rejected_when_not_paused(
-    client, db, mock_user, patched_celery,
+    client, db, mock_user, queued_jobs,
 ):
     """A successful deploy is not a valid resume target — only paused is."""
     deployment = _make_deployment_with_creds(
@@ -219,12 +207,12 @@ def test_resume_rejected_when_not_paused(
     )
     response = client.post(f"/deployments/{deployment.deploymentId}/resume")
     assert response.status_code == 409
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
 def test_destroy_allowed_from_paused(
-    client, db, mock_user, patched_celery,
+    client, db, mock_user, queued_jobs,
 ):
     """Paused deployments still hold OpenStack resources — Destroy works."""
     deployment = _make_deployment_with_creds(
@@ -271,7 +259,7 @@ IN_FLIGHT_TASK_FIXTURES = [
     "task_type, task_status, expected_status_text", IN_FLIGHT_TASK_FIXTURES
 )
 def test_delete_rejected_while_action_in_flight(
-    client, db, mock_user, patched_celery, task_type, task_status, expected_status_text,
+    client, db, mock_user, queued_jobs, task_type, task_status, expected_status_text,
 ):
     """DELETE must 409 while *any* lifecycle task is in flight,
     regardless of which kind. The current_status string in the
@@ -289,7 +277,7 @@ def test_delete_rejected_while_action_in_flight(
     )
     body = response.json()
     assert expected_status_text in str(body.get("detail", ""))
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
@@ -297,7 +285,7 @@ def test_delete_rejected_while_action_in_flight(
     "task_type, task_status, expected_status_text", IN_FLIGHT_TASK_FIXTURES
 )
 def test_resume_rejected_while_action_in_flight(
-    client, db, mock_user, patched_celery, task_type, task_status, expected_status_text,
+    client, db, mock_user, queued_jobs, task_type, task_status, expected_status_text,
 ):
     """RESUME mirrors PAUSE — refused during any in-flight task."""
     deployment = _make_deployment_with_creds(
@@ -307,7 +295,7 @@ def test_resume_rejected_while_action_in_flight(
     )
     response = client.post(f"/deployments/{deployment.deploymentId}/resume")
     assert response.status_code == 409
-    patched_celery.assert_not_called()
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
@@ -315,7 +303,7 @@ def test_resume_rejected_while_action_in_flight(
     "task_type, task_status, expected_status_text", IN_FLIGHT_TASK_FIXTURES
 )
 def test_resend_access_rejected_while_action_in_flight(
-    client, db, mock_user, patched_celery, task_type, task_status, expected_status_text,
+    client, db, mock_user, queued_jobs, task_type, task_status, expected_status_text,
 ):
     """The resend-access endpoint must mirror the lifecycle gate —
     sending a fresh credentials mail in the middle of a destroy or
@@ -351,7 +339,7 @@ def test_resend_access_rejected_while_action_in_flight(
 
 
 @pytest.mark.integration
-def test_pause_failed_status_allows_retry(client, db, mock_user, patched_celery):
+def test_pause_failed_status_allows_retry(client, db, mock_user, queued_jobs):
     """A previously failed pause must still allow a fresh PAUSE
     attempt — the deployment itself is unaffected. Mirrors the
     lifecycle matrix entry for ``pause_failed``.
@@ -367,7 +355,7 @@ def test_pause_failed_status_allows_retry(client, db, mock_user, patched_celery)
 
 
 @pytest.mark.integration
-def test_destroy_allowed_from_pause_failed(client, db, mock_user, patched_celery):
+def test_destroy_allowed_from_pause_failed(client, db, mock_user, queued_jobs):
     """User can give up on a stuck pause and tear it down."""
     deployment = _make_deployment_with_creds(
         db, mock_user,

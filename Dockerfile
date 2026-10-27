@@ -5,7 +5,7 @@
 # ----------------------------------------------------------------
 # Stage 1: Builder - Install Dependencies with Poetry
 # ----------------------------------------------------------------
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Set environment variables for build
 ENV PYTHONUNBUFFERED=1 \
@@ -40,12 +40,12 @@ RUN poetry install --no-root --no-interaction --no-ansi --only main 2>/dev/null 
 # ----------------------------------------------------------------
 # Stage 2: Runtime - Production Image
 # ----------------------------------------------------------------
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Metadata
 LABEL maintainer="your.email@example.com" \
       version="1.0.0" \
-      description="FastAPI Backend with Auth, Git & Celery"
+      description="FastAPI Backend with Auth, Git & a Postgres job queue"
 
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -58,7 +58,7 @@ ENV PYTHONUNBUFFERED=1 \
     APP_HOME=/app
 
 # Install runtime system dependencies. ``apt-get upgrade`` runs first so
-# the base ``python:3.11-slim`` tag picks up Debian-security backports
+# the base ``python:3.12-slim`` tag picks up Debian-security backports
 # released after the upstream image was last rebuilt — that's where
 # things like CVE-2026-45447 (openssl 3.5.6-1~deb13u2) come from. Trivy
 # blocks the push on any HIGH/CRITICAL OS finding, so even though it
@@ -73,7 +73,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade base-image Python tooling (pip / setuptools / wheel) to pull
-# in security fixes that the upstream `python:3.11-slim` tag hasn't
+# in security fixes that the upstream `python:3.12-slim` tag hasn't
 # picked up yet. Trivy scans these system site-packages — anything
 # HIGH/CRITICAL here blocks the push.
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel

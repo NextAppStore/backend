@@ -33,6 +33,10 @@
 # ----------------------------------------------------------------
 MODE ?= container
 
+# Container engine, podman-first — mirrors deployment/Makefile so this
+# file works on a podman-only machine too.
+DOCKER := $(shell command -v podman 2>/dev/null || command -v docker)
+
 TEST_DB_USER     ?= postgres
 TEST_DB_PASSWORD ?= postgres
 TEST_DB_NAME     ?= backend_test
@@ -44,11 +48,12 @@ ifeq ($(MODE),host)
 else
   TEST_DB_HOST     ?= postgres-test
   TEST_DB_PORT     ?= 5432
-  # The container builds its venv at /app/.venv (see backend/Dockerfile.dev).
-  # We invoke pytest through ``poetry run`` so the venv is activated even
-  # though it's not on the default PATH — a bare ``pytest`` exec would
-  # otherwise fail with ``executable file not found in $PATH``.
-  PYTEST_RUNNER    := docker compose -f ../deployment/docker-compose.dev.yml exec -T backend poetry run pytest
+  # The container's venv lives at /opt/venv and is symlinked to
+  # /opt/appvenv, whose bin/ is on PATH (see backend/Dockerfile.dev), so a
+  # bare ``pytest`` resolves. No ``poetry run`` needed — and it would be
+  # fragile here anyway, since Poetry would re-resolve the venv against
+  # the bind-mounted pyproject.toml.
+  PYTEST_RUNNER    := $(DOCKER) compose -f ../deployment/docker-compose.dev.yml exec -T backend pytest
 endif
 
 TEST_DATABASE_URL ?= postgresql://$(TEST_DB_USER):$(TEST_DB_PASSWORD)@$(TEST_DB_HOST):$(TEST_DB_PORT)/$(TEST_DB_NAME)
@@ -71,7 +76,7 @@ test-backend-isolated: ## Run backend tests against the isolated postgres-test s
 ifeq ($(MODE),host)
 	TEST_DATABASE_URL=$(TEST_DATABASE_URL) $(PYTEST_RUNNER)
 else
-	docker compose -f ../deployment/docker-compose.dev.yml exec -T \
+	$(DOCKER) compose -f ../deployment/docker-compose.dev.yml exec -T \
 	  -e TEST_DATABASE_URL=$(TEST_DATABASE_URL) \
-	  backend poetry run pytest
+	  backend pytest
 endif

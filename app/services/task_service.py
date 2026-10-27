@@ -1,28 +1,25 @@
-"""Task lifecycle helpers.
+"""Queue a task for the worker.
 
-Two-phase dispatch:
-
-1. `prepare_task_in_tx` — INSERT a PENDING task row in the caller's
-   transaction (no commit, no Celery I/O). The caller commits the
-   surrounding business state and the new task row atomically.
-
-2. `dispatch_to_celery` — outside the original TX, push the task to
-   RabbitMQ. On success the row's `celeryTaskId` is stamped; on
-   failure the row is marked FAILED. Either way the user sees a row
-   in the deployment list reflecting reality — no splitbrain.
+The ``tasks`` table is the job queue. ``prepare_task_in_tx`` inserts a
+PENDING row carrying the sealed job payload in the caller's transaction;
+committing it is all it takes to hand the job to a worker (a trigger sends
+``task_queued`` on commit). Deployment, teams and the task therefore become
+visible together or not at all, and there is no second system that could
+have accepted a job the database never saw, or the other way round.
 """
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.celery_app import celery_app
 from app.crud import tasks as crud_tasks
-from app.i18n import get_current_locale, t
+from app.i18n import get_current_locale
 from app.models import Task, TaskStatus, TaskType
+from app.services.jobs import JobPayload, seal_payload, state_token_hash
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +39,18 @@ def prepare_task_in_tx(
     db: Session,
     deployment_id: uuid.UUID,
     task_type: TaskType,
+    payload: JobPayload,
 ) -> Task:
-    """Insert a PENDING task row in the caller's transaction.
+    """Insert a PENDING task row with its sealed job payload in the caller's transaction.
 
-    Does NOT call `db.commit()` — the caller is responsible for
-    committing the surrounding state alongside this row, so that
-    deployment + teams + task are all visible (or all rolled back)
-    atomically.
+    A fresh random ``state_token`` is added to ``payload``; only its hash
+    is stored on the row. The worker uses the token to reach this
+    deployment's OpenTofu state while the task runs (see
+    ``tf_state_store.authorize``).
+
+    Does NOT call `db.commit()` — the caller commits the surrounding state
+    alongside this row, so that deployment + teams + task are all visible
+    (or all rolled back) atomically.
 
     Raises `ActiveTaskExistsError` if the deployment already has a
     PENDING/RUNNING task. A Postgres partial unique index enforces this
@@ -63,13 +65,15 @@ def prepare_task_in_tx(
                 f"Deployment {deployment_id} already has active task {task.taskId}"
             )
 
+    state_token = secrets.token_urlsafe(32)
     db_task = Task(
         deploymentId=deployment_id,
         type=task_type,
         status=TaskStatus.PENDING,
-        celeryTaskId=None,
+        payload=seal_payload({**payload, "state_token": state_token}),
+        state_token_hash=state_token_hash(state_token),
         # Language of the triggering request; later texts that have no
-        # request context (reconciler, mails) use it.
+        # request context (finalizer, mails) use it.
         locale=get_current_locale(),
     )
     db.add(db_task)
@@ -87,49 +91,5 @@ def prepare_task_in_tx(
             ) from e
         raise
     db.refresh(db_task)
+    logger.info("Task %s (%s) queued for deployment %s", db_task.taskId, task_type.value, deployment_id)
     return db_task
-
-
-def dispatch_to_celery(
-    db: Session,
-    task: Task,
-    celery_task_name: str,
-    celery_args: list,
-) -> tuple[Task, str]:
-    """Push a prepared task to Celery.
-
-    MUST be called after the surrounding TX committed. Runs in fresh
-    transactions so the task row is updated independently of any later
-    request-handling commit.
-
-    On `send_task` failure the task is marked FAILED and the original
-    exception is re-raised — the caller turns that into a 503.
-    """
-    try:
-        # The language travels as a message header, not as an argument: a
-        # worker that does not know about it ignores unknown headers (an
-        # extra positional arg would make it fail with a TypeError), so the
-        # backend can be rolled out before the worker. A worker that does
-        # care reads it from ``self.request`` (``bind=True`` tasks).
-        result = celery_app.send_task(
-            celery_task_name,
-            args=celery_args,
-            headers={"locale": task.locale or get_current_locale()},
-        )
-    except Exception:
-        logger.exception(
-            "Celery dispatch failed for task %s (deployment %s)",
-            task.taskId,
-            task.deploymentId,
-        )
-        task.status = TaskStatus.FAILED
-        task.logs = t("task.dispatch_failed", task.locale)
-        db.commit()
-        db.refresh(task)
-        raise
-
-    task.celeryTaskId = result.id
-    db.commit()
-    db.refresh(task)
-    logger.info("Task %s dispatched as celery task %s", task.taskId, result.id)
-    return task, result.id

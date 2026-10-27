@@ -407,7 +407,7 @@ def notify_deployment_succeeded(
     terraform_outputs: dict[str, Any] | None,
     locale: Locale | None = None,
 ) -> None:
-    """Top-level entry point — call from the celery event listener
+    """Top-level entry point — called by ``task_finalizer`` (exactly once)
     after a successful DEPLOY task.
 
     ``locale`` is the language of the request that started the deploy

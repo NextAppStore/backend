@@ -7,7 +7,18 @@ import pytest
 
 from app.i18n.locale import current_locale
 from app.models import App, Deployment, Task, TaskType
-from app.services import task_service
+from app.services import jobs, task_service
+
+
+def _payload() -> jobs.JobPayload:
+    return jobs.JobPayload(
+        app_id="app-1",
+        app_git_link="https://example.com/r.git",
+        release="v1",
+        user_vars={},
+        teams={},
+        openstack_envelope={"encrypted_secret_b64": "abc"},
+    )
 
 
 def _unknown_app(admin_client, accept_language):
@@ -85,7 +96,9 @@ def test_task_remembers_the_language_of_the_triggering_request(db, mock_user, lo
     deployment = _deployment(db, mock_user)
     token = current_locale.set(locale)
     try:
-        task = task_service.prepare_task_in_tx(db, deployment.deploymentId, TaskType.DEPLOY)
+        task = task_service.prepare_task_in_tx(
+            db, deployment.deploymentId, TaskType.DEPLOY, _payload()
+        )
     finally:
         current_locale.reset(token)
     db.commit()
@@ -95,7 +108,9 @@ def test_task_remembers_the_language_of_the_triggering_request(db, mock_user, lo
 @pytest.mark.integration
 def test_task_defaults_to_german_outside_of_a_request(db, mock_user):
     deployment = _deployment(db, mock_user)
-    task = task_service.prepare_task_in_tx(db, deployment.deploymentId, TaskType.DEPLOY)
+    task = task_service.prepare_task_in_tx(
+        db, deployment.deploymentId, TaskType.DEPLOY, _payload()
+    )
     db.commit()
     assert task.locale == "de"
 

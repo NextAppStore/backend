@@ -2,7 +2,16 @@
 
 [![Coverage](https://img.shields.io/endpoint?url=https://six7-click-n-deploy.github.io/backend/badge.json)](https://six7-click-n-deploy.github.io/backend/)
 
-FastAPI-Backend des App Stores. Nimmt REST-Anfragen vom Frontend entgegen, validiert Keycloak-Tokens, persistiert in PostgreSQL und dispatcht Deployment-Tasks an den Celery-Worker via RabbitMQ.
+FastAPI-Backend des App Stores. Nimmt REST-Anfragen vom Frontend entgegen, validiert Keycloak-Tokens und persistiert in PostgreSQL. Postgres ist zugleich die Job-Queue für den Worker, der Kanal für den Live-Stream und der Speicher für den OpenTofu-State — RabbitMQ, Redis und Celery gibt es nicht mehr.
+
+## Job-Queue (Postgres)
+
+1. Ein Endpunkt legt Deployment, Teams und den `tasks`-Eintrag mit verschlüsseltem Job-Payload in **einer** Transaktion an (`services/task_service.py`). Der Commit ist die Übergabe: ein Trigger schickt `NOTIFY task_queued`.
+2. Der Worker holt den Task mit `SELECT … FOR UPDATE SKIP LOCKED`, hält eine Lease, schreibt Fortschritt und Logs in `task_events` und am Ende Ergebnis + Terminal-Event auf die Zeile.
+3. Jeder Backend-Prozess hört per `LISTEN` auf `task_events` (weckt die SSE-Streams, `services/db_events.py`) und `task_finished` (Nacharbeit wie Mails und Soft-Delete — genau einmal, `services/task_finalizer.py`). Ein Reaper beendet Tasks, deren Worker die Lease nicht mehr erneuert.
+4. OpenTofu speichert den State über das HTTP-Backend `/internal/tfstate` (Token pro Task, verschlüsselt in `terraform_states`).
+
+Der Worker meldet sich als Rolle `appstore_worker` an, die nur die Queue-Spalten sieht. Diese Spalten sind der Vertrag zwischen den beiden Repos: festgelegt in der Migration `f8a9b0c1d2e3_worker_role.py`, geprüft von `tests/test_worker_contract.py`. Nach `alembic upgrade head` setzt `python scripts/worker_db_role.py` das Passwort aus `WORKER_DB_PASSWORD` (`make migrate-dev` erledigt beides).
 
 ## Setup
 
@@ -46,7 +55,7 @@ Swagger-UI mit allen Endpoints: http://localhost:8000/docs (nach `make dev-up`).
 - **SQLAlchemy 2.0** ORM, **Alembic** für Migrationen
 - **Pydantic** für Request-/Response-Validierung
 - **python-keycloak** für OIDC-Token-Validierung
-- **Celery** als Producer (Tasks gehen an Worker via RabbitMQ)
+- **psycopg 3** (auch asynchrones `LISTEN/NOTIFY` für Live-Stream und Finalizer)
 - **Ruff** für Linting und Formatting
 - **pytest** mit `unit`/`integration`/`api`-Markern
 
@@ -56,12 +65,11 @@ Der Code liegt in `app/` und folgt einem Schichtenmodell: ein Request läuft `ro
 
 ```
 app/
-├── main.py          # FastAPI-App, Router-Registrierung, Lifespan (startet u.a. den Event-Listener-Thread)
+├── main.py          # FastAPI-App, Router-Registrierung, Lifespan (startet LISTEN-Verbindung + Reaper)
 ├── config.py        # Pydantic-Settings aus Env-Variablen
 ├── database.py      # SQLAlchemy-Engine + Session-Dependency
 ├── models.py        # ORM-Modelle (eine Tabelle = eine Klasse)
 ├── schemas.py       # Pydantic Request-/Response-Schemas
-├── celery_app.py    # Celery-Producer (dispatcht Tasks an den Worker)
 ├── routers/         # HTTP-Endpoints, ein File pro Ressource (siehe unten)
 ├── crud/            # DB-Operationen, keine HTTP- oder Business-Logik (siehe unten)
 ├── services/        # Fachlogik & externe Integrationen (siehe unten)
@@ -78,7 +86,8 @@ app/
 | `apps` | `/apps` | App-Katalog: Registrierung, Variablen, Versionen |
 | `admin_apps` | `/admin` | Admin-Freigabe von App-Versionen |
 | `deployments` | `/deployments` | Deployments anlegen/steuern (Kern-Ressource) |
-| `tasks` | `/tasks` | Celery-Task-Status |
+| `tasks` | `/tasks` | Task-Status und -Logs |
+| `internal_tfstate` | `/internal/tfstate` | OpenTofu-HTTP-State-Backend für den Worker (Token pro Task, nicht in OpenAPI, nicht über nginx erreichbar) |
 | `teams` | `/teams` | Teams innerhalb eines Kurses |
 | `quotas` | `/quotas` | OpenStack-Quota-Abfrage |
 | `dashboard` | `/dashboard` | Aggregierte Übersichten fürs Frontend |
@@ -94,19 +103,20 @@ app/
 
 | Service | Zweck |
 |---|---|
-| `celery_event_listener` | Daemon-Thread: konsumiert Celery-Events aus RabbitMQ, schreibt Task-Status in die DB |
-| `reconciler` | Fängt hängende Tasks ab, deren Events verloren gingen (Fallback zum Listener) |
-| `deployment_pubsub` | In-Process-Bridge Listener → SSE-Endpoint (Live-Status) |
+| `jobs` | Vertrag mit dem Worker: Event-Namen, Job-Payload, Terminal-Event |
+| `db_events` | Eine `LISTEN`-Verbindung pro Prozess: weckt SSE-Streams, meldet fertige Tasks an den Finalizer |
+| `task_finalizer` | Nacharbeit genau einmal (`finalized_at`, `SKIP LOCKED`) + Reaper für abgelaufene Leases |
+| `tf_state_store` | OpenTofu-State pro Deployment (verschlüsselt), Locking, Token-Prüfung |
 | `deployment_status` | Verheiratet gecachten OpenTofu-State mit Live-OpenStack-Daten (Infrastructure-Tab) |
 | `deployment_notifier` | Baut & versendet Post-Deploy-Mails (User- und Owner-Variante) |
 | `email_service` | SMTP-Versand + Jinja2-Templating für die Mails |
-| `task_service` | Zwei-Phasen-Dispatch: PENDING-Row in Tx anlegen, dann Celery-Enqueue |
+| `task_service` | Legt den PENDING-Task mit versiegeltem Payload in der Transaktion des Aufrufers an |
 | `lifecycle` | Single Source of Truth, welche Aktion in welchem Deployment-Status erlaubt ist |
 | `git_service` | Git-Clone/Release-Infos, Sparse-Checkout für den Variablen-Scan |
 | `openstack_client` | Gemeinsamer OpenStack-Client-Layer (per-User-`Connection`) |
 | `openstack_validator` | Prüft Credentials gegen das Ziel-Keystone (Upsert + `/test`) |
 | `clouds_yaml_parser` | Parst rohes `clouds.yaml` in ein Credential-Schema |
-| `tf_state_parser` | Liest den in `Task.tf_state` persistierten OpenTofu-State |
+| `tf_state_parser` | Parst den OpenTofu-State aus `terraform_states` für den Infrastructure-Tab |
 
 **utils/** — `keycloak_auth` (Token-Validierung), `permissions` + `capabilities` (rollenbasierte `can_*`/`ensure_*`-Checks), `crypto` (Fernet-Verschlüsselung at-rest, Key geteilt mit dem Worker), `app_image` (Data-URL ↔ Bytes), `time`.
 

@@ -1,16 +1,13 @@
-"""Fehlertext-Zerlegung für die API und Sprach-Header beim Celery-Dispatch."""
+"""Fehlertext-Zerlegung für die API."""
 
 import uuid
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.models import TaskStatus, TaskType
 from app.schemas import TaskResponse
-from app.services import task_service
-from app.services.celery_event_listener import _apply_infra_failure
 from app.utils.task_logs import (
     FAILURE_DETAIL_DIVIDER,
     FAILURE_PREFIX,
@@ -48,19 +45,6 @@ def test_divider_without_details():
     assert split_failure_logs(f"Kopfzeile\n{FAILURE_DETAIL_DIVIDER}\n") == ("Kopfzeile", None)
 
 
-def test_infra_failure_written_by_the_listener_round_trips_in_both_languages():
-    """Was der Listener schreibt, muss ``split_failure_logs`` wieder zerlegen können."""
-    for locale in ("de", "en"):
-        update: dict = {}
-        _apply_infra_failure(update, "WorkerLostError('x')", "tb", locale)
-        headline, details = split_failure_logs(update["logs"])
-        assert headline and "WorkerLostError" in details
-
-    update = {}
-    _apply_infra_failure(update, "SomethingElse('x')", "tb", "en")
-    assert split_failure_logs(update["logs"])[0].startswith(FAILURE_PREFIX)
-
-
 # ---------------------------------------------------------------------------
 # TaskResponse
 # ---------------------------------------------------------------------------
@@ -68,7 +52,6 @@ def _task(logs):
     return SimpleNamespace(
         taskId=uuid.uuid4(),
         deploymentId=uuid.uuid4(),
-        celeryTaskId="c",
         type=TaskType.DEPLOY,
         status=TaskStatus.FAILED,
         started_at=None,
@@ -96,30 +79,3 @@ def test_task_response_failure_fields_are_none_for_normal_logs():
     body = TaskResponse.model_validate(_task('[{"message": "ok"}]')).model_dump()
     assert body["failure_headline"] is None
     assert body["failure_details"] is None
-
-
-# ---------------------------------------------------------------------------
-# Celery-Dispatch: Sprache als Header
-# ---------------------------------------------------------------------------
-def _dispatch(locale):
-    task = SimpleNamespace(
-        taskId=uuid.uuid4(), deploymentId=uuid.uuid4(), celeryTaskId=None, locale=locale
-    )
-    with patch("app.services.task_service.celery_app.send_task") as send_task:
-        send_task.return_value = SimpleNamespace(id="celery-1")
-        task_service.dispatch_to_celery(MagicMock(), task, "tasks.deploy_application", ["a", "b"])
-    return send_task
-
-
-@pytest.mark.parametrize("locale", ["de", "en"])
-def test_locale_is_sent_as_message_header(locale):
-    send_task = _dispatch(locale)
-    send_task.assert_called_once()
-    assert send_task.call_args.kwargs["headers"] == {"locale": locale}
-
-
-def test_positional_arguments_are_not_changed():
-    """Ein Worker ohne Sprachunterstützung bekommt weiterhin genau seine Argumente."""
-    send_task = _dispatch("en")
-    assert send_task.call_args.args == ("tasks.deploy_application",)
-    assert send_task.call_args.kwargs["args"] == ["a", "b"]

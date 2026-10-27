@@ -26,9 +26,11 @@ from app.models import (
     Task,
     TaskStatus,
     TaskType,
+    TerraformState,
     User,
     UserOpenStackCredential,
 )
+from app.utils import crypto
 
 # ----------------------------------------------------------------
 # Helpers / fixtures
@@ -77,8 +79,6 @@ _DEMO_STATE = {
 
 def _ensure_user_credentials(db, user):
     """User needs credentials so ``user_connection`` doesn't 412."""
-    from app.utils import crypto
-
     db.add(
         UserOpenStackCredential(
             credentialId=uuid.uuid4(),
@@ -123,12 +123,16 @@ def _seed_deployment_with_state(db, user: User, app_row: App) -> Deployment:
     task = Task(
         taskId=uuid.uuid4(),
         deploymentId=deployment.deploymentId,
-        celeryTaskId="fake-celery-id",
         type=TaskType.DEPLOY,
         status=TaskStatus.SUCCESS,
-        tf_state=json.dumps(_DEMO_STATE),
     )
     db.add(task)
+    # The state lives in terraform_states, where OpenTofu's HTTP backend
+    # writes it; encrypted like the real one.
+    db.add(TerraformState(
+        deploymentId=deployment.deploymentId,
+        state=crypto.encrypt(json.dumps(_DEMO_STATE)),
+    ))
     db.commit()
     return deployment
 
@@ -187,16 +191,6 @@ def patched_user_connection():
         yield conn
 
 
-@pytest.fixture
-def patched_celery_send():
-    class _FakeAsyncResult:
-        id = "fake-celery-task-id"
-
-    with patch(
-        "app.services.task_service.celery_app.send_task",
-        return_value=_FakeAsyncResult(),
-    ) as m:
-        yield m
 
 
 # ----------------------------------------------------------------
@@ -391,8 +385,8 @@ def test_resource_detail_invalid_address_returns_422(
 # POST /resources/{address}/redeploy — whitelist + dispatch
 # ----------------------------------------------------------------
 @pytest.mark.integration
-def test_redeploy_resource_dispatches_celery_task(
-    client, db, mock_user, patched_user_connection, patched_celery_send
+def test_redeploy_resource_queues_job(
+    client, db, mock_user, patched_user_connection, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app_row = _ensure_app(db, mock_user)
@@ -405,23 +399,19 @@ def test_redeploy_resource_dispatches_celery_task(
     body = response.json()
     assert body["status"] == "redeploying"
 
-    # Celery was called with the redeploy task name and the address as
-    # the extra positional arg.
-    patched_celery_send.assert_called_once()
-    name = patched_celery_send.call_args.args[0]
-    args = patched_celery_send.call_args.kwargs["args"]
-    assert name == "tasks.redeploy_resource"
-    # 7 standard args + 1 extra (resource_address)
-    assert len(args) == 8
-    assert args[-1] == ADDR_A
+    # One REDEPLOY job was queued, carrying the address to replace.
+    [(task, job)] = queued_jobs()
+    assert task.type == TaskType.REDEPLOY
+    assert str(task.taskId) == body["task_id"]
+    assert job["resource_address"] == ADDR_A
 
 
 @pytest.mark.integration
 def test_redeploy_rejects_network_address(
-    client, db, mock_user, patched_user_connection, patched_celery_send
+    client, db, mock_user, patched_user_connection, queued_jobs
 ):
     """Redeploying a network would tear down all team VMs — backend
-    must reject it before the Celery dispatch."""
+    must reject it before anything is queued."""
     _ensure_user_credentials(db, mock_user)
     app_row = _ensure_app(db, mock_user)
     deployment = _seed_deployment_with_state(db, mock_user, app_row)
@@ -431,12 +421,12 @@ def test_redeploy_rejects_network_address(
     )
     assert response.status_code == 422
     assert response.json()["detail"]["reason"] == "non_redeployable_resource_type"
-    assert not patched_celery_send.called
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration
 def test_redeploy_rejects_unknown_address(
-    client, db, mock_user, patched_user_connection, patched_celery_send
+    client, db, mock_user, patched_user_connection, queued_jobs
 ):
     _ensure_user_credentials(db, mock_user)
     app_row = _ensure_app(db, mock_user)
@@ -448,7 +438,7 @@ def test_redeploy_rejects_unknown_address(
     )
     assert response.status_code == 404
     assert response.json()["detail"]["reason"] == "resource_not_in_state"
-    assert not patched_celery_send.called
+    assert queued_jobs() == []
 
 
 @pytest.mark.integration

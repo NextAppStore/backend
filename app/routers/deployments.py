@@ -11,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import desc
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.crud import apps as crud_apps
@@ -21,9 +21,8 @@ from app.crud import openstack_credentials as crud_openstack_credentials
 from app.crud import settings as crud_settings
 from app.crud import teams as crud_teams
 from app.crud import users as crud_users
-from app.database import get_db
-from app.i18n import Locale, get_current_locale, t
-from app.models import Deployment, TaskStatus, TaskType, User, UserRole
+from app.database import SessionLocal, get_db
+from app.models import Deployment, TaskEvent, TaskStatus, TaskType, User, UserRole
 from app.models import Task as TaskModel  # for ad-hoc state queries
 from app.schemas import (
     DeploymentCreate,
@@ -37,14 +36,15 @@ from app.schemas import (
     MyAccessResponse,
     TaskSummary,
 )
-from app.services import deployment_notifier, email_service
+from app.services import deployment_notifier, email_service, tf_state_store
 from app.services import lifecycle as lifecycle_service
 from app.services import task_service as task_service_module
-from app.services.deployment_pubsub import pubsub
+from app.services.db_events import dispatcher as db_events
 from app.services.deployment_status import (
     build_resource_detail,
     build_resource_views,
 )
+from app.services.jobs import TERMINAL_EVENTS, JobPayload
 from app.services.tf_state_parser import parse_tf_state
 from app.utils.capabilities import (
     can_view_deployment_owner,
@@ -979,11 +979,9 @@ def create_deployment(
 
     Atomicity: a per-user advisory lock serializes credential mutation
     with deployment dispatch. The deployment row, teams, user mappings,
-    and the initial PENDING task row are all inserted in a single
-    transaction, so the user can never end up with a deployment row
-    that has no matching task. Celery dispatch happens AFTER commit;
-    if it fails, the task row is flipped to FAILED so the deployment
-    surfaces an honest error instead of hanging in PENDING forever.
+    and the initial PENDING task row (with the sealed job payload) are all
+    inserted in a single transaction. Committing it hands the job to the
+    worker: there is no second dispatch step that could fail afterwards.
     """
     # Per-user lock — serializes against PUT /me/openstack-credentials
     # and any other concurrent POST /deployments from this user. Held
@@ -1118,27 +1116,22 @@ def create_deployment(
         db, current_user.userId, rollback_on_missing=True
     )
 
-    # Insert PENDING task row in the SAME transaction as the deployment,
-    # commit atomically (deployment + teams + user_to_deployments + task),
-    # then dispatch to Celery outside the locked TX. On a send failure the
-    # task row is flipped to FAILED and we surface 503 — the deployment
-    # row stays, but the user sees an obvious failure instead of an
-    # eternal PENDING.
-    _commit_and_dispatch(
+    # Insert the PENDING task row in the SAME transaction as the
+    # deployment and commit atomically (deployment + teams +
+    # user_to_deployments + task). The commit is the hand-over: a trigger
+    # wakes the worker, which claims the row.
+    _queue_task(
         db,
         deployment_id=db_deployment.deploymentId,
         task_type=TaskType.DEPLOY,
-        celery_task_name="tasks.deploy_application",
-        celery_args=[
-            str(db_deployment.deploymentId),
-            str(db_deployment.appId),
-            db_deployment.app.git_link,
-            db_deployment.releaseTag,
-            user_vars,
-            teams_dict,
-            openstack_envelope,
-        ],
-        dispatch_error_label="Could not dispatch deployment task — please retry",
+        payload=JobPayload(
+            app_id=str(db_deployment.appId),
+            app_git_link=db_deployment.app.git_link,
+            release=db_deployment.releaseTag,
+            user_vars=user_vars,
+            teams=teams_dict,
+            openstack_envelope=openstack_envelope,
+        ),
         rollback_on_conflict=True,
     )
 
@@ -1268,34 +1261,30 @@ def _fetch_dispatch_envelope(db: Session, user_id, *, rollback_on_missing: bool)
         )
 
 
-def _commit_and_dispatch(
+def _queue_task(
     db: Session,
     *,
     deployment_id,
     task_type: TaskType,
-    celery_task_name: str,
-    celery_args: list,
-    dispatch_error_label: str,
+    payload: JobPayload,
     rollback_on_conflict: bool,
 ):
-    """Insert the PENDING task in-TX, commit, then dispatch to Celery.
+    """Insert the PENDING task with its job payload in-TX and commit.
 
-    Shared tail of the create and lifecycle dispatch paths:
+    Shared tail of the create and lifecycle paths:
 
     * ``prepare_task_in_tx`` → ``HTTPException(409)`` on an active task
       (the create path additionally rolls back its pending insert);
-    * ``commit`` + ``refresh`` the task row;
-    * ``dispatch_to_celery`` → ``HTTPException(503, dispatch_error_label)``
-      on a Celery send failure (the task row is flipped to FAILED inside
-      ``dispatch_to_celery`` in a fresh TX).
+    * ``commit`` + ``refresh`` the task row. The commit queues the job.
 
-    Returns the committed, dispatched ``Task``.
+    Returns the committed ``Task``.
     """
     try:
         task = task_service_module.prepare_task_in_tx(
             db,
             deployment_id=deployment_id,
             task_type=task_type,
+            payload=payload,
         )
     except task_service_module.ActiveTaskExistsError:
         if rollback_on_conflict:
@@ -1307,19 +1296,6 @@ def _commit_and_dispatch(
 
     db.commit()
     db.refresh(task)
-
-    try:
-        task, _celery_id = task_service_module.dispatch_to_celery(
-            db,
-            task=task,
-            celery_task_name=celery_task_name,
-            celery_args=celery_args,
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=dispatch_error_label,
-        )
     return task
 
 
@@ -1334,7 +1310,6 @@ def _dispatch_destroy(db: Session, deployment, current_user: User):
         deployment,
         current_user,
         task_type=TaskType.DESTROY,
-        celery_task_name="tasks.destroy_deployment",
         response_status="destroying",
     )
 
@@ -1344,36 +1319,27 @@ def _dispatch_lifecycle_task(
     deployment,
     current_user: User,
     task_type: TaskType,
-    celery_task_name: str,
     response_status: str,
-    extra_args: list | None = None,
+    resource_address: str | None = None,
 ):
     """Enqueue any post-deploy lifecycle worker task for a deployment.
 
     Used by destroy, pause, resume, and per-VM redeploy — all four
     follow the same pattern: load user inputs, gather team membership,
-    fetch the encrypted OpenStack envelope, atomically insert a
-    PENDING task row, commit, then ``send_task`` outside the locked
-    TX. On a Celery send failure the task row flips to FAILED in a
-    fresh TX (handled inside ``dispatch_to_celery``) and we surface a
-    503 so the user sees an obvious failure instead of a permanent
-    in-flight status.
+    fetch the encrypted OpenStack envelope, then insert the PENDING
+    task row with its sealed job payload and commit, which queues it.
 
     Args:
         task_type:           the ``TaskType`` enum value that drives both
                              the task row's ``type`` column and the
                              status the partial-unique index prevents
-                             from coexisting.
-        celery_task_name:    name registered on the worker side (e.g.
-                             ``tasks.pause_deployment``).
+                             from coexisting. The worker picks the job by it.
         response_status:     synthetic deployment status returned to the
                              frontend in the 202 body — frontend uses
                              this to immediately switch the UI into the
                              live-stream view without re-fetching.
-        extra_args:          additional positional args appended to the
-                             Celery payload after the standard seven.
-                             Used by ``tasks.redeploy_resource`` to pass
-                             the targeted resource address.
+        resource_address:    only for REDEPLOY: the OpenTofu address of
+                             the compute instance to replace.
     """
     try:
         user_vars = json.loads(deployment.userInputVar) if deployment.userInputVar else {}
@@ -1431,22 +1397,22 @@ def _dispatch_lifecycle_task(
         db, current_user.userId, rollback_on_missing=False
     )
 
-    task = _commit_and_dispatch(
+    payload = JobPayload(
+        app_id=str(deployment.appId),
+        app_git_link=deployment.app.git_link,
+        release=deployment.releaseTag,
+        user_vars=user_vars,
+        teams=teams_dict,
+        openstack_envelope=openstack_envelope,
+    )
+    if resource_address is not None:
+        payload["resource_address"] = resource_address
+
+    task = _queue_task(
         db,
         deployment_id=deployment.deploymentId,
         task_type=task_type,
-        celery_task_name=celery_task_name,
-        celery_args=[
-            str(deployment.deploymentId),
-            str(deployment.appId),
-            deployment.app.git_link,
-            deployment.releaseTag,
-            user_vars,
-            teams_dict,
-            openstack_envelope,
-            *(extra_args or []),
-        ],
-        dispatch_error_label=f"Could not dispatch {task_type.value} task — please retry",
+        payload=payload,
         rollback_on_conflict=False,
     )
 
@@ -1477,7 +1443,7 @@ def _dispatch_lifecycle_task(
 #
 #   * POST /{deployment_id}/resources/{address}/redeploy
 #       Per-VM redeploy — issues ``tofu apply -replace=<addr>
-#       -target=<addr>`` in a dedicated Celery task. Strictly
+#       -target=<addr>`` in a dedicated worker task. Strictly
 #       address-whitelisted against the cached TF state and the
 #       compute-instance category, so a hand-crafted POST can't smuggle
 #       a network-resource target (which would tear down all team VMs).
@@ -1508,24 +1474,14 @@ _TF_ADDRESS_RE = re.compile(
 
 
 def _latest_tf_state_for(deployment_id: UUID, db: Session) -> str | None:
-    """Return the JSON blob of the most recent task that captured an
-    OpenTofu state for this deployment, or None when no apply ever
-    succeeded yet.
+    """Return the deployment's current OpenTofu state as JSON text, or
+    None when no apply ever wrote one.
 
-    Note: we deliberately do NOT filter by ``task.type`` — the worker
-    captures state on deploy / destroy / pause / resume / redeploy
-    alike, and any of those produce a valid snapshot. The "most
-    recent" task wins, mirroring the existing ``get_deployment_outputs``
-    semantics in ``crud/deployments.py``.
+    The state lives in ``terraform_states`` (written by OpenTofu itself
+    through ``/internal/tfstate``), not on the task rows any more, so
+    there is exactly one copy and it is always the current one.
     """
-    task = (
-        db.query(TaskModel)
-        .filter(TaskModel.deploymentId == deployment_id)
-        .filter(TaskModel.tf_state.isnot(None))
-        .order_by(desc(TaskModel.created_at))
-        .first()
-    )
-    return task.tf_state if task else None
+    return tf_state_store.read(db, deployment_id)
 
 
 @router.get(
@@ -1641,7 +1597,7 @@ def redeploy_deployment_resource(
 
     Concurrency: same per-user advisory lock as create/destroy/pause
     so a parallel redeploy can't race a destroy. The lock is held
-    only for the row insert; Celery dispatch happens after commit.
+    until the task row is committed.
     """
     crud_locks.acquire_user_xact_lock(db, current_user.userId)
 
@@ -1689,9 +1645,8 @@ def redeploy_deployment_resource(
         deployment=deployment,
         current_user=current_user,
         task_type=TaskType.REDEPLOY,
-        celery_task_name="tasks.redeploy_resource",
         response_status="redeploying",
-        extra_args=[address],
+        resource_address=address,
     )
 
 
@@ -1756,7 +1711,6 @@ def pause_deployment(
         deployment,
         current_user,
         task_type=TaskType.PAUSE,
-        celery_task_name="tasks.pause_deployment",
         response_status="pausing",
     )
 
@@ -1798,7 +1752,6 @@ def resume_deployment(
         deployment,
         current_user,
         task_type=TaskType.RESUME,
-        celery_task_name="tasks.resume_deployment",
         response_status="resuming",
     )
 
@@ -2095,14 +2048,15 @@ def resend_access_credentials(
 # * ``event: log`` — every ``task-log`` from the worker. The payload
 #   is the LogEntry dict (timestamp, level, category, message, plus
 #   tool/streaming flags for streaming subprocess lines).
-# * ``event: overflow`` — emitted by the in-process pubsub when a
-#   slow consumer overran its bounded queue.
+# * ``event: succeeded`` / ``failed`` / ``revoked`` — the task ended;
+#   the stream closes after it.
 # * comment lines starting with ``:`` are SSE keepalive pings.
 #
-# The stream stays open until the deployment reaches a terminal state
-# (success/failed/cancelled), the client disconnects, or the backend
-# shuts down. There's no client-driven close — EventSource handles
-# reconnect automatically.
+# The events are rows in ``task_events`` (written by the worker); each
+# frame carries the row id as SSE ``id``, so a client reconnecting with
+# ``Last-Event-ID`` continues where it stopped. Between reads the handler
+# blocks until ``db_events`` wakes it (``task_events`` NOTIFY), so there is
+# no polling and new lines show up immediately.
 @router.get("/{deployment_id}/stream")
 async def stream_deployment_events(
     deployment_id: UUID,
@@ -2112,10 +2066,10 @@ async def stream_deployment_events(
 ):
     """Live progress + log stream for one deployment as Server-Sent Events.
 
-    The connection is authenticated with the same Keycloak dependency
-    used elsewhere; the standard auth middleware also vets the token
-    before this handler runs. After auth we attach to the in-process
-    pubsub for this deployment and forward every event to the client.
+    Streams the events of the deployment's latest task, from its start
+    (or from ``Last-Event-ID`` on a reconnect), then follows new ones until
+    the task's terminal event. The connection is authenticated with the
+    same Keycloak dependency used elsewhere.
     """
     deployment = crud_deployments.get_deployment(db, deployment_id)
     if not deployment:
@@ -2127,10 +2081,6 @@ async def stream_deployment_events(
     # and plain members still see metadata only.
     ensure_view_deployment_owner(current_user, deployment, db)
 
-    # Snapshot the latest task once before subscribing so the client
-    # gets a meaningful initial state. Reading happens before the
-    # generator yields its first chunk to avoid the "subscribed but
-    # nothing buffered yet" gap.
     latest_task = crud_deployments.get_latest_task(db, deployment_id)
     snapshot_payload = {
         "task_id": str(latest_task.taskId) if latest_task else None,
@@ -2139,63 +2089,60 @@ async def stream_deployment_events(
         "progress_pct": getattr(latest_task, "progress_pct", None),
         "type": latest_task.type.value if latest_task else None,
     }
-    initial_status = latest_task.status if latest_task else None
-
-    deployment_id_str = str(deployment_id)
-    # Read the request language now: the generator below runs while the
-    # response is streamed, outside the endpoint's own call frame.
-    locale = get_current_locale()
+    task_id = latest_task.taskId if latest_task else None
+    task_finished_at_connect = latest_task is not None and latest_task.status in (
+        TaskStatus.SUCCESS,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    )
+    # A reconnect (Last-Event-ID present, even "0") continues the stream;
+    # a fresh connect starts at the task's first event.
+    resuming = "last-event-id" in request.headers
+    try:
+        after_id = int(request.headers.get("last-event-id") or 0)
+    except ValueError:
+        after_id = 0
+    deployment_key = str(deployment_id)
 
     async def event_stream() -> AsyncIterator[bytes]:
-        queue = pubsub.subscribe(deployment_id_str)
-        try:
-            yield _sse_frame("snapshot", snapshot_payload)
-
-            # Backfill what's been happening lately. The pubsub keeps a
-            # bounded ring buffer of recent events per deployment so a
-            # client connecting mid-stream sees the last few minutes of
-            # progress / log output instead of an empty tail until the
-            # next worker line lands. Replays the buffer in order so
-            # ``streamCurrentPhaseIndex``/``streamProgress`` end up at
-            # their latest values before the live loop starts.
-            for past_event in pubsub.recent(deployment_id_str):
-                event_name = _event_name_for(past_event.get("type"))
-                yield _sse_frame(event_name, _localize_event(past_event, locale))
-
-            # If the task is already in a terminal state we still yield
-            # the snapshot but close the stream right away — no live
-            # events will ever arrive for this deployment.
-            if initial_status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED):
-                return
-
-            # Heartbeat / event-pump loop. Wait up to 15s for an event;
-            # if nothing arrives, send a ``: keepalive`` comment so
-            # proxies and the EventSource client don't time out.
+        nonlocal after_id
+        yield _sse_frame("snapshot", snapshot_payload)
+        if task_id is None:
+            return
+        if task_finished_at_connect and not resuming:
+            # Same as before the Postgres queue: a page opening the stream
+            # of a finished task gets the snapshot only (the full log is in
+            # the task row). A reconnect with Last-Event-ID still gets the
+            # rest, including the terminal event it may have missed.
+            return
+        # Subscribe before the first read: a NOTIFY between read and wait
+        # still sets the waiter.
+        with db_events.subscribe(deployment_key) as woken:
             while True:
-                if await request.is_disconnected():
-                    return
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
-                    yield b": keepalive\n\n"
+                woken.clear()
+                rows, finished = await asyncio.to_thread(_task_events_after, task_id, after_id)
+                for event_id, event_type, payload in rows:
+                    after_id = event_id
+                    yield _sse_frame(_event_name_for(event_type), json.loads(payload), event_id=event_id)
+                    if event_type in TERMINAL_EVENTS:
+                        return
+                if len(rows) == _SSE_BATCH:
+                    # More backlog than one batch; read on right away.
                     continue
-
-                event_name = _event_name_for(event.get("type"))
-                yield _sse_frame(event_name, _localize_event(event, locale))
-
-                # Stop streaming once the parent task reaches a
-                # terminal state. The lifecycle events (succeeded /
-                # failed / revoked) flow through the same pubsub key,
-                # so we look for them right here. Without this break
-                # the connection would dangle until the client closes
-                # it.
-                if event.get("type") in ("task-succeeded", "task-failed", "task-revoked"):
+                if finished:
+                    # Ended without a terminal event on record (e.g. a task
+                    # from before the Postgres queue); nothing more comes.
                     return
-        except asyncio.CancelledError:
-            # FastAPI cancels the generator on client disconnect.
-            raise
-        finally:
-            pubsub.unsubscribe(deployment_id_str, queue)
+                # Wait for the worker's next event; send a keepalive
+                # comment every 15 s so proxies and the client don't
+                # close an idle connection.
+                while not woken.is_set():
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        await asyncio.wait_for(woken.wait(), timeout=_SSE_KEEPALIVE_SECONDS)
+                    except TimeoutError:
+                        yield b": keepalive\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -2208,10 +2155,34 @@ async def stream_deployment_events(
     )
 
 
+_SSE_KEEPALIVE_SECONDS = 15.0
+# Upper bound per query, so a long backlog is sent in chunks.
+_SSE_BATCH = 500
+
+
+def _task_events_after(task_id: UUID, after_id: int) -> tuple[list[tuple[int, str, str]], bool]:
+    """The task's events with an id above ``after_id``, and whether the task has finished.
+
+    Runs in a thread with its own session: the stream outlives the
+    request's session.
+    """
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(TaskEvent.id, TaskEvent.type, TaskEvent.payload)
+            .where(TaskEvent.taskId == task_id, TaskEvent.id > after_id)
+            .order_by(TaskEvent.id)
+            .limit(_SSE_BATCH)
+        ).all()
+        status_value = session.execute(
+            select(TaskModel.status).where(TaskModel.taskId == task_id)
+        ).scalar()
+    finished = status_value in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED)
+    return [(r[0], r[1], r[2]) for r in rows], finished
+
+
 _EVENT_NAME_MAP: dict[str, str] = {
     "task-progress": "progress",
     "task-log": "log",
-    "task-overflow": "overflow",
     "task-started": "started",
     "task-succeeded": "succeeded",
     "task-failed": "failed",
@@ -2219,33 +2190,23 @@ _EVENT_NAME_MAP: dict[str, str] = {
 }
 
 
-def _event_name_for(celery_event_type: str | None) -> str:
-    """Map Celery event type names onto short SSE event names.
+def _event_name_for(event_type: str | None) -> str:
+    """Map stored event types onto short SSE event names.
 
-    Frontend code attaches listeners by these short names rather than
-    the verbose celery-internal ones; ``_EVENT_NAME_MAP`` is the
-    single source of truth on both sides of the wire.
+    Frontend code attaches listeners by these short names;
+    ``_EVENT_NAME_MAP`` is the single source of truth on both sides of
+    the wire.
     """
-    return _EVENT_NAME_MAP.get(celery_event_type or "", "message")
+    return _EVENT_NAME_MAP.get(event_type or "", "message")
 
 
-def _localize_event(event: dict, locale: Locale) -> dict:
-    """Put the texts the backend itself puts into stream events into ``locale``.
-
-    Only ``task-overflow`` carries such a text (written by the pubsub, which
-    has no request). Worker log lines are passed through untouched.
-    """
-    if event.get("type") == "task-overflow":
-        return {**event, "message": t("sse.overflow", locale)}
-    return event
-
-
-def _sse_frame(event_name: str, payload: dict) -> bytes:
+def _sse_frame(event_name: str, payload: dict, event_id: int | None = None) -> bytes:
     """Serialise one SSE frame.
 
     SSE format:
 
     ```
+    id: <task_events.id>\\n      (only for stored events)
     event: <name>\\n
     data: <json>\\n
     \\n
@@ -2256,4 +2217,5 @@ def _sse_frame(event_name: str, payload: dict) -> bytes:
     which keep everything on one line.
     """
     body = json.dumps(payload, default=str)
-    return f"event: {event_name}\ndata: {body}\n\n".encode()
+    id_line = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{id_line}event: {event_name}\ndata: {body}\n\n".encode()
