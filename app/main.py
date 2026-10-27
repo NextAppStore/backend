@@ -4,12 +4,18 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.database import libpq_url
+from app.i18n import LocaleMiddleware
+from app.i18n.handlers import localized_http_exception_handler
+from app.i18n.validation import localized_validation_handler
 from app.routers import (
     admin_apps,
+    admin_settings,
     apps,
     auth_keycloak,
     auth_lti,
@@ -113,6 +119,16 @@ app.add_middleware(
 )
 
 # ----------------------------------------------------------------
+# I18N
+# ----------------------------------------------------------------
+# Das Frontend schickt die UI-Sprache bei jeder Anfrage als
+# ``Accept-Language: de|en``. Die Middleware merkt sie sich pro Request, der
+# Handler übersetzt damit ``HTTPException.detail`` (siehe ``app/i18n``).
+app.add_middleware(LocaleMiddleware)
+app.add_exception_handler(StarletteHTTPException, localized_http_exception_handler)
+app.add_exception_handler(RequestValidationError, localized_validation_handler)
+
+# ----------------------------------------------------------------
 # ROUTERS
 # ----------------------------------------------------------------
 app.include_router(auth_keycloak.router, prefix="/auth", tags=["Authentication"])
@@ -121,6 +137,7 @@ app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(courses.router, prefix="/courses", tags=["Courses"])
 app.include_router(apps.router, prefix="/apps", tags=["Apps"])
 app.include_router(admin_apps.router, prefix="/admin", tags=["Admin"])
+app.include_router(admin_settings.router, prefix="/admin", tags=["Admin"])
 app.include_router(deployments.router, prefix="/deployments", tags=["Deployments"])
 app.include_router(tasks.router, prefix="/tasks", tags=["Tasks"])
 app.include_router(teams.router, prefix="/teams", tags=["Teams"])

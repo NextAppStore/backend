@@ -22,6 +22,7 @@ import psycopg
 import pytest
 
 from app.database import libpq_url
+from app.i18n import t as translate
 from app.models import (
     App,
     Deployment,
@@ -315,7 +316,8 @@ def test_reaper_fails_tasks_whose_lease_ran_out(db, listener):
     db.refresh(task)
     assert task.status == TaskStatus.FAILED
     assert task.lease_until is None and task.finished_at is not None
-    assert task.logs.startswith("partial") and task_finalizer.WORKER_LOST_MESSAGE in task.logs
+    worker_lost_message = translate("celery.worker_lost", task.locale)
+    assert task.logs.startswith("partial") and worker_lost_message in task.logs
     [event] = db.query(TaskEvent).filter(TaskEvent.taskId == task.taskId).all()
     assert event.type == jobs.EVENT_FAILED
     assert json.loads(event.payload)["failure_kind"] == jobs.FAILURE_KIND_WORKER_LOST

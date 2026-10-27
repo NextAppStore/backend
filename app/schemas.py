@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, model_validator
 
 from app.models import (
     AppVersionApprovalStatus,
@@ -12,6 +12,7 @@ from app.models import (
     UserRole,
     VmTopology,
 )
+from app.utils.task_logs import split_failure_logs
 
 
 # ----------------------------------------------------------------
@@ -371,7 +372,14 @@ class IPAddressSchema(BaseModel):
 
 class NetworkAddressSchema(BaseModel):
     network: str
-    fixed_ip: str | None = None
+    fixed_ip: str | None = Field(
+        default=None,
+        description="First fixed IPv4 address, or null if there is none.",
+    )
+    fixed_ip_v6: str | None = Field(
+        default=None,
+        description="First fixed IPv6 address, or null on IPv4-only networks.",
+    )
     floating_ip: str | None = None
     mac: str | None = None
     ips: list[IPAddressSchema] = Field(default_factory=list)
@@ -388,7 +396,14 @@ class NetworkPortSchema(BaseModel):
     network_id: str | None = None
     status: str | None = None
     mac: str | None = None
-    fixed_ip: str | None = None
+    fixed_ip: str | None = Field(
+        default=None,
+        description="First fixed IPv4 address, or null if there is none.",
+    )
+    fixed_ip_v6: str | None = Field(
+        default=None,
+        description="First fixed IPv6 address, or null on IPv4-only networks.",
+    )
     security_group_ids: list[str] = []
     fixed_ips: list[PortIPAddressSchema] = Field(default_factory=list)
 
@@ -479,6 +494,21 @@ class TaskResponse(TaskBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failure_headline(self) -> str | None:
+        """One-line summary when ``logs`` holds a failure text, else ``None``.
+
+        Spares the client from searching ``logs`` for text markers.
+        """
+        return split_failure_logs(self.logs)[0]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failure_details(self) -> str | None:
+        """Technical part of the failure text (traceback, raw exception)."""
+        return split_failure_logs(self.logs)[1]
 
 
 # ----------------------------------------------------------------
@@ -587,5 +617,27 @@ class OpenStackCredentialResponse(OpenStackCredentialBase):
     updated_at: datetime | None = None
     is_locked: bool = False
     active_deployments: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ----------------------------------------------------------------
+# ADMIN SETTINGS SCHEMAS
+# ----------------------------------------------------------------
+class DefaultNetworkUpsert(BaseModel):
+    """Body of PUT /admin/settings/default-network."""
+    id: str = Field(..., min_length=1, description="OpenStack network ID (UUID)")
+    name: str = Field(..., min_length=1, description="OpenStack network name")
+    mode: Literal["id", "name"] = "id"
+
+
+class DefaultNetworkResponse(BaseModel):
+    """Always 200 — `configured=False` when no default has been set yet."""
+    configured: bool = False
+    id: str | None = None
+    name: str | None = None
+    mode: Literal["id", "name"] | None = None
+    updated_at: datetime | None = None
+    updated_by: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)

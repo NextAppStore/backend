@@ -1,0 +1,42 @@
+Deployment-Zusammenfassung — {{ deployment.name }}
+{{ "=" * (deployment.name|length + 30) }}
+
+Hallo {{ owner_display_name }},
+
+Dein Deployment "{{ deployment.name }}" ({{ deployment.app_name }}) wurde
+erfolgreich abgeschlossen. Unten findest du die vollständige Übersicht aller
+Teams und der Zugangsdaten, die jedem Benutzer ausgestellt wurden. Jeder
+Benutzer hat außerdem eine eigene Zugangsmail erhalten; diese Kopie ist für
+deine Unterlagen.
+
+In Click-n-Deploy öffnen: {{ detail_url }}
+{% for team in teams %}
+TEAM — {{ team.name }}
+{{ "-" * (team.name|length + 7) }}
+{% if team.vm -%}
+{% if team.vm.url %}URL:           {{ team.vm.url }}
+{% endif -%}
+{% if team.vm.floating_ip %}Floating-IP:   {{ team.vm.floating_ip }}
+{% endif -%}
+{% if team.vm.fixed_ip %}Feste IP:      {{ team.vm.fixed_ip }}
+{% endif -%}
+{% for ip in team.vm.ips if ip not in [team.vm.fixed_ip, team.vm.floating_ip] %}IP:            {{ ip }}
+{% endfor -%}
+{% if team.vm.instance_name %}Instanz:       {{ team.vm.instance_name }}
+{% endif -%}
+{% endif -%}
+Mitglieder:
+{% for member in team.members %}  - {{ member.display_name }} <{{ member.user.email }}>
+      login:    {{ member.access.username }}
+{%- if member.access.auth_type == "password" and member.access.password %}
+      Passwort: {{ member.access.password }}
+{%- elif member.access.auth_type == "ssh_key" and member.access.auth_value %}
+      SSH-Key:  {{ member.access.auth_value }}
+{%- elif member.access.auth_type == "oauth" and member.access.auth_value %}
+      Login:    {{ member.access.auth_value }}
+{%- elif member.access.auth_type == "none" %}
+      Zugang:   (offen, keine Zugangsdaten)
+{%- endif %}
+{% endfor %}
+{% endfor %}
+Deployt aus {{ deployment.git_url }} mit dem Tag {{ deployment.release_tag }}.

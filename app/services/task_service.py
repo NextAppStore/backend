@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.crud import tasks as crud_tasks
+from app.i18n import get_current_locale
 from app.models import Task, TaskStatus, TaskType
 from app.services.jobs import JobPayload, seal_payload, state_token_hash
 
@@ -71,6 +72,9 @@ def prepare_task_in_tx(
         status=TaskStatus.PENDING,
         payload=seal_payload({**payload, "state_token": state_token}),
         state_token_hash=state_token_hash(state_token),
+        # Language of the triggering request; later texts that have no
+        # request context (finalizer, mails) use it.
+        locale=get_current_locale(),
     )
     db.add(db_task)
     try:

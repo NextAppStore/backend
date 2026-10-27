@@ -13,6 +13,7 @@ from app.crud import deployments as crud_deployments
 from app.crud import locks as crud_locks
 from app.crud import openstack_credentials as crud_creds
 from app.database import get_db
+from app.i18n import localize_text
 from app.models import User
 from app.schemas import (
     OpenStackCredentialFromYaml,
@@ -68,7 +69,10 @@ def _to_response(
         project_domain_name=row.project_domain_name,
         has_credential=has_credential,
         last_validated_at=row.last_validated_at,
-        last_validation_error=row.last_validation_error,
+        # Stored in English; shown in the language of the current request.
+        last_validation_error=(
+            localize_text(row.last_validation_error) if row.last_validation_error else None
+        ),
         created_at=row.created_at,
         updated_at=row.updated_at,
         is_locked=is_locked,

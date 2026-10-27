@@ -5274,7 +5274,20 @@
                 "type": "null"
               }
             ],
-            "title": "Fixed Ip"
+            "title": "Fixed Ip",
+            "description": "First fixed IPv4 address, or null if there is none."
+          },
+          "fixed_ip_v6": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Ip V6",
+            "description": "First fixed IPv6 address, or null on IPv4-only networks."
           },
           "floating_ip": {
             "anyOf": [
@@ -5360,7 +5373,20 @@
                 "type": "null"
               }
             ],
-            "title": "Fixed Ip"
+            "title": "Fixed Ip",
+            "description": "First fixed IPv4 address, or null if there is none."
+          },
+          "fixed_ip_v6": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Ip V6",
+            "description": "First fixed IPv6 address, or null on IPv4-only networks."
           },
           "security_group_ids": {
             "items": {
@@ -5974,6 +6000,32 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "failure_headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Headline",
+            "description": "One-line summary when ``logs`` holds a failure text, else ``None``.\n\nSpares the client from searching ``logs`` for text markers.",
+            "readOnly": true
+          },
+          "failure_details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Details",
+            "description": "Technical part of the failure text (traceback, raw exception).",
+            "readOnly": true
           }
         },
         "type": "object",
@@ -5982,7 +6034,9 @@
           "type",
           "status",
           "taskId",
-          "created_at"
+          "created_at",
+          "failure_headline",
+          "failure_details"
         ],
         "title": "TaskResponse"
       },

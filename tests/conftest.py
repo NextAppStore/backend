@@ -66,6 +66,11 @@ from app.models import (  # noqa: F401  (importiert für seitliche Effekte / Met
 )
 from app.utils.permissions import get_current_user as get_current_user_keycloak
 
+# Ohne ``Accept-Language`` antwortet das Backend auf Deutsch (wie das Frontend).
+# Die API-Tests prüfen die englischen Quelltexte der Fehlermeldungen; die
+# Übersetzung selbst ist in ``tests/test_i18n_api.py`` abgedeckt.
+_API_HEADERS = {"Accept-Language": "en"}
+
 # ----------------------------------------------------------------
 # Engine — einmal pro Test-Prozess.
 #
@@ -235,7 +240,7 @@ def _make_client(user):
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user_keycloak] = override_get_current_user
-    return TestClient(app)
+    return TestClient(app, headers=_API_HEADERS)
 
 
 @pytest.fixture
@@ -256,7 +261,7 @@ def client(mock_user):
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user_keycloak] = override_get_current_user
 
-    with TestClient(app) as c:
+    with TestClient(app, headers=_API_HEADERS) as c:
         yield c
 
     app.dependency_overrides.clear()
@@ -290,7 +295,7 @@ def unauth_client():
 
     app.dependency_overrides[get_db] = override_get_db
 
-    with TestClient(app) as c:
+    with TestClient(app, headers=_API_HEADERS) as c:
         yield c
 
     app.dependency_overrides.clear()

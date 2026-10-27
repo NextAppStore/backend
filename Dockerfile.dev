@@ -5,11 +5,18 @@
 FROM python:3.12-slim
 
 # Set environment variables
+# The venv deliberately lives OUTSIDE /app: docker-compose.dev.yml
+# bind-mounts ../backend onto /app for hot reload, which would hide an
+# in-project .venv. The previous workaround (an anonymous `- /app/.venv`
+# volume) breaks under podman-compose, which does not seed anonymous
+# volumes from image content — the venv came up empty and uvicorn was
+# unimportable. /opt/venv is untouched by the bind mount.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
-    POETRY_VIRTUALENVS_IN_PROJECT=true \
-    POETRY_VIRTUALENVS_CREATE=true
+    POETRY_VIRTUALENVS_IN_PROJECT=false \
+    POETRY_VIRTUALENVS_CREATE=true \
+    POETRY_VIRTUALENVS_PATH=/opt/venv
 
 WORKDIR /app
 
@@ -32,8 +39,15 @@ RUN curl -sSL https://install.python-poetry.org | python3 - && \
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Install Python dependencies (ohne Projekt selbst)
-RUN poetry install --no-root --no-interaction --no-ansi
+# Install Python dependencies (ohne Projekt selbst), then pin the venv to
+# a stable path. Poetry names venvs by hashing the project dir, so
+# `poetry run` at container start would have to re-resolve that hash
+# against the bind-mounted pyproject.toml. Symlinking to /opt/appvenv
+# lets the CMD call the interpreter directly and skip Poetry at runtime.
+RUN poetry install --no-root --no-interaction --no-ansi && \
+    ln -s "$(poetry env info --path)" /opt/appvenv
+
+ENV PATH="/opt/appvenv/bin:$PATH"
 
 # Copy application code
 COPY . .
@@ -44,5 +58,8 @@ RUN mkdir -p /tmp/repos
 # Expose port
 EXPOSE 8000
 
-# Entrypoint für Backend: FastAPI mit Hot Reload
-CMD ["poetry", "run", "python", "-m", "app.server", "--reload"]
+# Entrypoint für Backend: FastAPI mit Hot Reload.
+# Direkt der venv-Interpreter (/opt/appvenv/bin/python via PATH) statt
+# `poetry run` — Poetry müsste sonst beim Start die bind-gemountete
+# pyproject.toml neu auflösen.
+CMD ["python", "-m", "app.server", "--reload"]

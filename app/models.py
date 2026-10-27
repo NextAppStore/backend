@@ -282,6 +282,10 @@ class Task(Base):
     # replaying its event stream.
     current_phase = Column(String(50), nullable=True)
     progress_pct = Column(Integer, nullable=True)
+    # UI language (``de``/``en``) of the request that started the task. The
+    # texts the backend writes later without a request (reconciler, mails,
+    # failure headlines) are rendered in this language.
+    locale = Column(String(2), nullable=False, default="de", server_default="de")
     created_at = Column(DateTime, default=utcnow)
 
     # --- Queue columns --------------------------------------------------
@@ -645,3 +649,21 @@ class CourseTeacher(Base):
     # Relationships
     course = relationship("Course", back_populates="course_teachers")
     user = relationship("User", back_populates="course_teacher_links")
+
+
+# ----------------------------------------------------------------
+# SETTING MODEL (generic admin-editable global key-value settings)
+# ----------------------------------------------------------------
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)  # JSON-encoded
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.userId", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    updater = relationship("User", foreign_keys=[updated_by])

@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.crud import deployments as crud_deployments
 from app.database import SessionLocal
+from app.i18n import t
 from app.models import Task, TaskEvent, TaskStatus, TaskType
 from app.services import deployment_notifier, tf_state_store
 from app.services.jobs import FAILURE_KIND_WORKER_LOST, FINISHED_STATUSES, terminal_event
@@ -41,13 +42,6 @@ logger = logging.getLogger(__name__)
 
 # Rows per pass. A backlog is worked off over consecutive passes.
 BATCH = 20
-
-WORKER_LOST_MESSAGE = (
-    "Der Worker, der diesen Auftrag ausgeführt hat, antwortet nicht mehr "
-    "(abgestürzt oder neu gestartet). Der Auftrag wurde abgebrochen und wird "
-    "nicht automatisch wiederholt. Bitte prüfen Sie den Zustand der "
-    "Ressourcen und starten Sie die Aktion bei Bedarf erneut."
-)
 
 
 # ----------------------------------------------------------------
@@ -162,9 +156,10 @@ def finalize_pending(db: Session) -> int:
 def reap_expired(db: Session) -> int:
     """Fail RUNNING tasks whose lease has run out. Returns how many.
 
-    Handles at most ``BATCH`` tasks per call. Appends ``WORKER_LOST_MESSAGE``
-    to the task log and writes the terminal event (so live streams end).
-    The status change fires ``task_finished``, which finalizes the task.
+    Handles at most ``BATCH`` tasks per call. Appends the worker-lost
+    message, in the task's locale, to the task log and writes the terminal
+    event (so live streams end). The status change fires ``task_finished``,
+    which finalizes the task.
     """
     tasks = db.scalars(
         select(Task)
@@ -177,7 +172,8 @@ def reap_expired(db: Session) -> int:
         task.status = TaskStatus.FAILED
         task.finished_at = utcnow()
         task.lease_until = None
-        task.logs = f"{task.logs}\n\n{WORKER_LOST_MESSAGE}" if task.logs else WORKER_LOST_MESSAGE
+        worker_lost_message = t("celery.worker_lost", task.locale)
+        task.logs = f"{task.logs}\n\n{worker_lost_message}" if task.logs else worker_lost_message
         event_type, payload = terminal_event(task, FAILURE_KIND_WORKER_LOST)
         db.add(TaskEvent(taskId=task.taskId, type=event_type, payload=json.dumps(payload)))
     db.commit()
