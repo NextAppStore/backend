@@ -23,6 +23,7 @@ from app.routers import (
     dashboard,
     deployments,
     internal_tfstate,
+    lab,
     openstack_credentials,
     openstack_resources,
     quotas,
@@ -139,6 +140,7 @@ app.include_router(apps.router, prefix="/apps", tags=["Apps"])
 app.include_router(admin_apps.router, prefix="/admin", tags=["Admin"])
 app.include_router(admin_settings.router, prefix="/admin", tags=["Admin"])
 app.include_router(deployments.router, prefix="/deployments", tags=["Deployments"])
+app.include_router(lab.router, prefix="/deployments", tags=["Lab"])
 app.include_router(tasks.router, prefix="/tasks", tags=["Tasks"])
 app.include_router(teams.router, prefix="/teams", tags=["Teams"])
 app.include_router(quotas.router, prefix="/quotas", tags=["Quotas"])

@@ -50,6 +50,12 @@ class TaskType(str, enum.Enum):
     # ``tofu apply -replace=<addr> -target=<addr>``, without
     # touching the other team VMs of the same deployment.
     REDEPLOY = "redeploy"
+    # Kubernetes-App student-pod management (``labctl`` ported to the worker).
+    # LAB_REASSIGN also covers ``labctl passwd`` (rotate secret, then reassign).
+    LAB_REASSIGN = "lab_reassign"
+    LAB_RESET = "lab_reset"
+    LAB_ADD_STUDENT = "lab_add_student"
+    LAB_REMOVE_STUDENT = "lab_remove_student"
 
 
 class TaskStatus(str, enum.Enum):

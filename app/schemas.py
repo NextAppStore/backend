@@ -512,6 +512,57 @@ class TaskResponse(TaskBase):
 
 
 # ----------------------------------------------------------------
+# LAB SCHEMAS (Kubernetes-App student-pod management, backend#37)
+#
+# ``labctl`` ported onto the Postgres task queue: ``list`` is a direct,
+# synchronous read against the team's cluster; every mutating action
+# enqueues a Task and returns 202 like pause/resume/redeploy already do.
+# ----------------------------------------------------------------
+LAB_USERNAME_PATTERN = r"^[a-z]([a-z0-9-]{0,28}[a-z0-9])?$"
+
+
+class StudentStatusResponse(BaseModel):
+    """One row of ``labctl list``."""
+
+    username: str
+    port: int | None = None
+    generation: int | None = None
+    pod_name: str | None = None
+    pod_phase: str | None = None
+    pod_age: datetime | None = None
+    ready: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AddStudentRequest(BaseModel):
+    """Body of ``POST .../lab/teams/{team_id}/students`` (``labctl add-student``)."""
+
+    username: str = Field(..., pattern=LAB_USERNAME_PATTERN)
+    password: str | None = Field(default=None, min_length=1)
+    port: int | None = Field(default=None, ge=30000, le=32767)
+
+
+class ResetStudentRequest(BaseModel):
+    """Body of ``POST .../reset`` (``labctl reset <user> [--new-password]``)."""
+
+    new_password: bool = False
+
+
+class PasswdStudentRequest(BaseModel):
+    """Body of ``POST .../passwd`` (``labctl passwd <user> [password]``)."""
+
+    password: str | None = Field(default=None, min_length=1)
+
+
+class LabActionAccepted(BaseModel):
+    """202 response shared by every mutating lab endpoint."""
+
+    task_id: UUID
+    status: str
+
+
+# ----------------------------------------------------------------
 # TEAM SCHEMAS
 #
 # Teams are bound directly to a deployment (FK

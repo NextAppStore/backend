@@ -58,6 +58,18 @@ class JobPayload(TypedDict):
     state_token: NotRequired[str]
     # Only for REDEPLOY: the resource address to replace.
     resource_address: NotRequired[str]
+    # Only for LAB_*: which team's cluster, which student, and the already
+    # IPv4-patched kubeconfig (``k8s_client.patch_server_to_ipv4``) — the
+    # worker's DB role cannot SELECT ``tasks.outputs`` of another task, so
+    # the backend resolves and patches it once, here, before dispatch.
+    team: NotRequired[str]
+    student_username: NotRequired[str]
+    kubeconfig: NotRequired[str]
+    # LAB_ADD_STUDENT: explicit password/port, or None to auto-generate/allocate.
+    student_password: NotRequired[str | None]
+    node_port: NotRequired[int | None]
+    # LAB_RESET: labctl's --new-password flag.
+    new_password_requested: NotRequired[bool]
 
 
 def state_token_hash(token: str) -> str:

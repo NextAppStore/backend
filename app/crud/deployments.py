@@ -339,6 +339,49 @@ def get_latest_successful_deploy_outputs(
     return None
 
 
+def _output_value(outputs: dict[str, Any] | None, key: str) -> Any:
+    """Pluck ``outputs[key].value`` out, tolerating missing keys (mirrors ``deployment_notifier``)."""
+    if not outputs:
+        return None
+    bag = outputs.get(key)
+    return bag.get("value") if isinstance(bag, dict) else None
+
+
+def get_team_kubeconfig(db: Session, deployment_id: UUID, team_name: str) -> str | None:
+    """Raw kubeconfig YAML for one team, from the latest successful DEPLOY's outputs.
+
+    ``kubeconfigs`` is a Terraform output of the Kubernetes-App, a map
+    ``team -> kubeconfig YAML string`` (cluster-admin, one cluster per team).
+    None if there is no successful deploy yet, or this app/deployment has no
+    such output (not a Kubernetes-App deployment).
+    """
+    outputs = get_latest_successful_deploy_outputs(db, deployment_id)
+    kubeconfigs = _output_value(outputs, "kubeconfigs")
+    if not isinstance(kubeconfigs, dict):
+        return None
+    value = kubeconfigs.get(team_name)
+    return value if isinstance(value, str) else None
+
+
+def get_team_fixed_ip_v4(db: Session, deployment_id: UUID, team_name: str) -> str | None:
+    """IPv4 address of one team's VM, from the latest successful DEPLOY's ``team_vms`` output.
+
+    Used to patch a team's kubeconfig ``server`` field onto IPv4 (the worker
+    and backend network lack IPv6 routes; the k3s API server's certificate
+    already covers both addresses via ``tls-san``, see
+    ``Kubernetes-App/terraform/user-data.yaml.tpl``).
+    """
+    outputs = get_latest_successful_deploy_outputs(db, deployment_id)
+    team_vms = _output_value(outputs, "team_vms")
+    if not isinstance(team_vms, dict):
+        return None
+    entry = team_vms.get(team_name)
+    if not isinstance(entry, dict):
+        return None
+    fixed_ip = entry.get("fixed_ip")
+    return fixed_ip if isinstance(fixed_ip, str) else None
+
+
 def get_deployments(
     db: Session,
     skip: int = 0,
