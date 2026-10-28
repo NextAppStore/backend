@@ -226,6 +226,39 @@ def ensure_resend_access(
         raise _forbidden("deployment_resend_forbidden")
 
 
+def can_view_lab(user: User, dep: Deployment, db: Session) -> bool:
+    """Read-only lab access: student pod list/status for one team.
+
+    Same rule as owner-view (:func:`can_view_deployment_owner`): the
+    deployment owner, admins, and course-teachers of the owner's course.
+    """
+    return can_view_deployment_owner(user, dep, db)
+
+
+def ensure_view_lab(user: User, dep: Deployment, db: Session) -> None:
+    if not can_view_lab(user, dep, db):
+        raise _forbidden("lab_view_forbidden")
+
+
+def can_operate_lab(user: User, dep: Deployment, db: Session) -> bool:
+    """Mutating lab actions (reassign/reset/add/remove-student, passwd) and
+    the cluster-admin kubeconfig download.
+
+    Deliberately broader than :func:`can_operate_deployment` (owner-or-admin
+    only, for pause/destroy/redeploy of the VM itself): the issue frames
+    student-pod management as an instructor feature, not an owner-only one,
+    and a course can have several teachers running labs day to day. Kept as
+    its own function (not an alias) so it can diverge from the view rule
+    later without a breaking rename.
+    """
+    return can_view_deployment_owner(user, dep, db)
+
+
+def ensure_operate_lab(user: User, dep: Deployment, db: Session) -> None:
+    if not can_operate_lab(user, dep, db):
+        raise _forbidden("lab_operate_forbidden")
+
+
 # ================================================================
 # COURSES
 # ================================================================
