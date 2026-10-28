@@ -31,14 +31,14 @@ from app.crud import deployments as crud_deployments
 from app.crud import locks as crud_locks
 from app.crud import teams as crud_teams
 from app.database import get_db
-from app.models import Deployment, Team, TaskType, User
+from app.models import Deployment, TaskType, Team, User
 from app.schemas import (
+    LAB_USERNAME_PATTERN,
     AddStudentRequest,
     LabActionAccepted,
     PasswdStudentRequest,
     ResetStudentRequest,
     StudentStatusResponse,
-    LAB_USERNAME_PATTERN,
 )
 from app.services import k8s_client
 from app.services import task_service as task_service_module
@@ -54,7 +54,9 @@ router = APIRouter()
 _UsernamePath = Path(..., pattern=LAB_USERNAME_PATTERN)
 
 
-def _load_deployment_and_team(db: Session, deployment_id: UUID, team_id: UUID) -> tuple[Deployment, Team]:
+def _load_deployment_and_team(
+    db: Session, deployment_id: UUID, team_id: UUID
+) -> tuple[Deployment, Team]:
     deployment = crud_deployments.get_deployment(db, deployment_id)
     if not deployment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment not found")
@@ -76,10 +78,14 @@ def _kubeconfig_and_ip(db: Session, deployment_id: UUID, team_name: str) -> tupl
     return kubeconfig, fixed_ip
 
 
-def _queue_lab_task(db: Session, deployment_id: UUID, task_type: TaskType, payload: JobPayload) -> LabActionAccepted:
+def _queue_lab_task(
+    db: Session, deployment_id: UUID, task_type: TaskType, payload: JobPayload
+) -> LabActionAccepted:
     crud_locks.acquire_deployment_xact_lock(db, deployment_id)
     try:
-        task = task_service_module.prepare_task_in_tx(db, deployment_id=deployment_id, task_type=task_type, payload=payload)
+        task = task_service_module.prepare_task_in_tx(
+            db, deployment_id=deployment_id, task_type=task_type, payload=payload
+        )
     except task_service_module.ActiveTaskExistsError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -90,7 +96,9 @@ def _queue_lab_task(db: Session, deployment_id: UUID, task_type: TaskType, paylo
     return LabActionAccepted(task_id=task.taskId, status="pending")
 
 
-@router.get("/{deployment_id}/lab/teams/{team_id}/students", response_model=list[StudentStatusResponse])
+@router.get(
+    "/{deployment_id}/lab/teams/{team_id}/students", response_model=list[StudentStatusResponse]
+)
 def list_students(
     deployment_id: UUID,
     team_id: UUID,
@@ -126,7 +134,9 @@ def download_kubeconfig(
         content=patched,
         media_type="application/yaml",
         headers={
-            "Content-Disposition": (f'attachment; filename="{filename}"; filename*=UTF-8\'\'{filename}'),
+            "Content-Disposition": (
+                f"attachment; filename=\"{filename}\"; filename*=UTF-8''{filename}"
+            ),
         },
     )
 

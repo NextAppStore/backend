@@ -125,13 +125,19 @@ def list_students(api_client: k8s.ApiClient) -> list[StudentPodStatus]:
     core_api = k8s.CoreV1Api(api_client)
 
     deployments = apps_api.list_namespaced_deployment(
-        LAB_NAMESPACE, label_selector=_STUDENT_LABEL_SELECTOR, _request_timeout=_REQUEST_TIMEOUT_SECONDS
+        LAB_NAMESPACE,
+        label_selector=_STUDENT_LABEL_SELECTOR,
+        _request_timeout=_REQUEST_TIMEOUT_SECONDS,
     ).items
     services = core_api.list_namespaced_service(
-        LAB_NAMESPACE, label_selector=_STUDENT_LABEL_SELECTOR, _request_timeout=_REQUEST_TIMEOUT_SECONDS
+        LAB_NAMESPACE,
+        label_selector=_STUDENT_LABEL_SELECTOR,
+        _request_timeout=_REQUEST_TIMEOUT_SECONDS,
     ).items
     pods = core_api.list_namespaced_pod(
-        LAB_NAMESPACE, label_selector=_STUDENT_LABEL_SELECTOR, _request_timeout=_REQUEST_TIMEOUT_SECONDS
+        LAB_NAMESPACE,
+        label_selector=_STUDENT_LABEL_SELECTOR,
+        _request_timeout=_REQUEST_TIMEOUT_SECONDS,
     ).items
 
     ports_by_student = {
@@ -156,7 +162,9 @@ def list_students(api_client: k8s.ApiClient) -> list[StudentPodStatus]:
             StudentPodStatus(
                 username=username,
                 port=ports_by_student.get(username),
-                generation=int(generation_raw) if generation_raw and generation_raw.isdigit() else None,
+                generation=int(generation_raw)
+                if generation_raw and generation_raw.isdigit()
+                else None,
                 pod_name=pod.metadata.name if pod else None,
                 pod_phase=pod.status.phase if pod else None,
                 pod_age=pod.metadata.creation_timestamp if pod else None,
