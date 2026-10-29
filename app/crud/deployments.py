@@ -363,25 +363,6 @@ def get_team_kubeconfig(db: Session, deployment_id: UUID, team_name: str) -> str
     return value if isinstance(value, str) else None
 
 
-def get_team_fixed_ip_v4(db: Session, deployment_id: UUID, team_name: str) -> str | None:
-    """IPv4 address of one team's VM, from the latest successful DEPLOY's ``team_vms`` output.
-
-    Used to patch a team's kubeconfig ``server`` field onto IPv4 (the worker
-    and backend network lack IPv6 routes; the k3s API server's certificate
-    already covers both addresses via ``tls-san``, see
-    ``Kubernetes-App/terraform/user-data.yaml.tpl``).
-    """
-    outputs = get_latest_successful_deploy_outputs(db, deployment_id)
-    team_vms = _output_value(outputs, "team_vms")
-    if not isinstance(team_vms, dict):
-        return None
-    entry = team_vms.get(team_name)
-    if not isinstance(entry, dict):
-        return None
-    fixed_ip = entry.get("fixed_ip")
-    return fixed_ip if isinstance(fixed_ip, str) else None
-
-
 def get_deployments(
     db: Session,
     skip: int = 0,
