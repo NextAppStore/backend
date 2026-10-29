@@ -6,29 +6,27 @@ kubeconfig. Mutating actions (reassign/reset/add/remove-student) run as
 worker jobs instead (``app.services.jobs.JobPayload``'s ``kubeconfig`` field)
 and build their own client the same way, in the worker repository.
 
-Three responsibilities:
+Two responsibilities:
 
-1. Patch a team's kubeconfig onto its IPv4 address — the backend/worker
-   network lacks IPv6 routes, but the server's ``server:`` URL from
-   Terraform (``Kubernetes-App/terraform/main.tf`` ``api_endpoint``)
-   prefers the bracketed IPv6 literal when present.
-2. Open one ``kubernetes`` ``ApiClient`` per request, exposed as a context
-   manager so endpoints can close it cleanly.
-3. List student pods/services/deployments in namespace ``lab``, matching
+1. Open one ``kubernetes`` ``ApiClient`` per request from a team's
+   kubeconfig as provisioned, exposed as a context manager so endpoints can
+   close it cleanly. The ``server:`` URL from Terraform
+   (``Kubernetes-App/terraform/main.tf`` ``api_endpoint``) is the bracketed
+   IPv6 literal and is used unpatched — IPv4 on this OpenStack network is
+   unreliable/unreachable from the backend and worker, while IPv6 is not.
+2. List student pods/services/deployments in namespace ``lab``, matching
    ``labctl cmd_list`` exactly.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 
-import yaml
 from fastapi import HTTPException, status
 from kubernetes import client as k8s
 from kubernetes import config as k8s_config
@@ -42,47 +40,21 @@ _REQUEST_TIMEOUT_SECONDS = 10
 LAB_NAMESPACE = "lab"
 _STUDENT_LABEL_SELECTOR = "role=student"
 
-# Terraform's ``api_endpoint`` local: "https://[<ipv6>]:6443" or
-# "https://<ipv4>:6443" — see Kubernetes-App/terraform/main.tf.
-_SERVER_HOST_RE = re.compile(r"^(https://)(?:\[[^\]]+\]|[^:/]+)(:\d+)$")
-
-
-def patch_server_to_ipv4(kubeconfig_yaml: str, ipv4: str) -> str:
-    """Rewrite the kubeconfig's ``cluster.server`` host to ``ipv4``.
-
-    Port and ``certificate-authority-data`` are left untouched. Safe: the
-    k3s API server's serving certificate carries both the IPv4 and IPv6
-    addresses as SANs (``tls-san`` in ``user-data.yaml.tpl``), so swapping
-    the host here still passes TLS hostname verification.
-    """
-    doc = yaml.safe_load(kubeconfig_yaml)
-    for cluster_entry in doc.get("clusters", []):
-        cluster = cluster_entry.get("cluster", {})
-        server = cluster.get("server")
-        if not server:
-            continue
-        match = _SERVER_HOST_RE.match(server)
-        if not match:
-            continue
-        cluster["server"] = f"{match.group(1)}{ipv4}{match.group(2)}"
-    return yaml.safe_dump(doc)
-
 
 @contextmanager
-def team_api_client(kubeconfig_yaml: str, ipv4: str) -> Iterator[k8s.ApiClient]:
+def team_api_client(kubeconfig_yaml: str) -> Iterator[k8s.ApiClient]:
     """Yield a ``kubernetes`` ``ApiClient`` for one team's cluster.
 
     - 502 for a transient/unreachable cluster error (500s are reserved for
       backend bugs); the message is never the raw SDK exception text, which
       can echo request details.
     """
-    patched = patch_server_to_ipv4(kubeconfig_yaml, ipv4)
     api_client: k8s.ApiClient | None = None
     # The ``kubernetes`` client only loads a kubeconfig from a file path or
     # the default locations, not from a string — write it to a private
     # tempfile for the duration of this connection.
     with tempfile.NamedTemporaryFile("w", suffix=".kubeconfig", delete=False) as f:
-        f.write(patched)
+        f.write(kubeconfig_yaml)
         kubeconfig_path = f.name
     try:
         configuration = k8s.Configuration()

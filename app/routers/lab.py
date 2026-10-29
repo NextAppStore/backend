@@ -11,8 +11,8 @@ API and the Postgres task queue:
   calls, never this process (``AGENTS.md`` ``§5``: no blocking cloud calls
   in HTTP endpoints).
 * ``GET .../kubeconfig`` is a teacher-only download of the team's
-  cluster-admin kubeconfig (IPv4-patched), gated at the stricter
-  "operate" level since the token it carries is cluster-admin.
+  cluster-admin kubeconfig, gated at the stricter "operate" level since the
+  token it carries is cluster-admin.
 
 A lab action always needs an explicit team (kubeconfigs are per-team, not
 per-deployment — a deployment can have several teams, each its own
@@ -66,16 +66,15 @@ def _load_deployment_and_team(
     return deployment, team
 
 
-def _kubeconfig_and_ip(db: Session, deployment_id: UUID, team_name: str) -> tuple[str, str]:
-    """The team's raw kubeconfig and its VM's IPv4, or 412 if not deployed yet."""
+def _get_kubeconfig(db: Session, deployment_id: UUID, team_name: str) -> str:
+    """The team's raw kubeconfig, or 412 if not deployed yet."""
     kubeconfig = crud_deployments.get_team_kubeconfig(db, deployment_id, team_name)
-    fixed_ip = crud_deployments.get_team_fixed_ip_v4(db, deployment_id, team_name)
-    if not kubeconfig or not fixed_ip:
+    if not kubeconfig:
         raise HTTPException(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail={"reason": "lab_not_deployed"},
         )
-    return kubeconfig, fixed_ip
+    return kubeconfig
 
 
 def _queue_lab_task(
@@ -108,8 +107,8 @@ def list_students(
     """All students of one team with status, port and generation (``labctl list``)."""
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_view_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
-    with k8s_client.team_api_client(kubeconfig, fixed_ip) as api:
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
+    with k8s_client.team_api_client(kubeconfig) as api:
         return k8s_client.list_students(api)
 
 
@@ -120,18 +119,17 @@ def download_kubeconfig(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_keycloak),
 ):
-    """Download the team's cluster-admin kubeconfig (IPv4-patched).
+    """Download the team's cluster-admin kubeconfig.
 
     Gated at ``ensure_operate_lab``, not the weaker view gate: this token
     is cluster-admin on the team's VM, stricter than read-only pod status.
     """
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
-    patched = k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     filename = f"{team.name}.kubeconfig"
     return Response(
-        content=patched,
+        content=kubeconfig,
         media_type="application/yaml",
         headers={
             "Content-Disposition": (
@@ -156,13 +154,13 @@ def add_student(
     """Create a new student pod (``labctl add-student``)."""
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     payload = JobPayload(
         team=team.name,
         student_username=body.username,
         student_password=body.password,
         node_port=body.port,
-        kubeconfig=k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip),
+        kubeconfig=kubeconfig,
     )
     return _queue_lab_task(db, deployment_id, TaskType.LAB_ADD_STUDENT, payload)
 
@@ -182,11 +180,11 @@ def reassign_student(
     """Assign a new pod to a student; home directory is kept (``labctl reassign``)."""
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     payload = JobPayload(
         team=team.name,
         student_username=username,
-        kubeconfig=k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip),
+        kubeconfig=kubeconfig,
     )
     return _queue_lab_task(db, deployment_id, TaskType.LAB_REASSIGN, payload)
 
@@ -207,12 +205,12 @@ def reset_student(
     """New pod and empty home directory for a student (``labctl reset``)."""
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     payload = JobPayload(
         team=team.name,
         student_username=username,
         new_password_requested=body.new_password,
-        kubeconfig=k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip),
+        kubeconfig=kubeconfig,
     )
     return _queue_lab_task(db, deployment_id, TaskType.LAB_RESET, payload)
 
@@ -238,13 +236,13 @@ def change_student_password(
     """
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     payload = JobPayload(
         team=team.name,
         student_username=username,
         new_password_requested=True,
         student_password=body.password,
-        kubeconfig=k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip),
+        kubeconfig=kubeconfig,
     )
     return _queue_lab_task(db, deployment_id, TaskType.LAB_REASSIGN, payload)
 
@@ -264,10 +262,10 @@ def remove_student(
     """Delete a student's pod, service, secret and home directory (``labctl remove-student``)."""
     deployment, team = _load_deployment_and_team(db, deployment_id, team_id)
     ensure_operate_lab(current_user, deployment, db)
-    kubeconfig, fixed_ip = _kubeconfig_and_ip(db, deployment_id, team.name)
+    kubeconfig = _get_kubeconfig(db, deployment_id, team.name)
     payload = JobPayload(
         team=team.name,
         student_username=username,
-        kubeconfig=k8s_client.patch_server_to_ipv4(kubeconfig, fixed_ip),
+        kubeconfig=kubeconfig,
     )
     return _queue_lab_task(db, deployment_id, TaskType.LAB_REMOVE_STUDENT, payload)
